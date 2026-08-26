@@ -1,0 +1,15 @@
+﻿# ===== 引擎 =====
+__pycache__/
+*.pyc
+config.local.json
+.ipynb_checkpoints/
+
+# ===== 前端 / Worker =====
+node_modules/
+.wrangler/
+dev.log
+.dev.vars
+*.log
+tmp-downloads/
+.DS_Store
+tmp-downloads*/

@@ -1,0 +1,41 @@
+# =============================================================================
+# wrangler.toml —— Anima 生图网站 Worker 项目配置（Sprint 8-KV 版）
+# 依据：docs/tech-design.md v2.0 + docs/platform-decision.md
+# 存储：D1（任务表）+ KV（图片；替代 R2——免费 1GB/10 万读·天/1000 写·天，无需银行卡）
+# 部署步骤（wrangler deploy 前）：
+#   1. 创建 D1：npx wrangler d1 create anima-tasks → 把返回的 database_id 填入下方
+#   2. 创建 KV：npx wrangler kv namespace create ANIMA_KV → 把返回的 id 填入下方
+#   3. 配置引擎密钥：npx wrangler secret put ENGINE_KEY（部署后设置）
+#   4. 部署：npx wrangler deploy
+# 本地联调：npx wrangler dev --port 8787（--local 使用本地 SQLite/KV 模拟，无需真实资源）
+# =============================================================================
+
+name = "anima-web"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# ---------- 静态资产（Static Assets：免费不限量，同域托管） ----------
+[assets]
+directory = "./public"
+not_found_handling = "404-page"   # 未匹配资产且无 Worker 路由时返回 404（本项目仅两页，不用 SPA 回退）
+
+# ---------- 环境变量（部署时由站务配置；敏感值用 wrangler secret 注入，不进本文件） ----------
+[vars]
+NSFW_FILTER_ENABLED = "true"      # NSFW 提示词标签拦截开关（默认开启；站长部署时可改，政治敏感拦截不受影响）
+IP_HASH_SALT = "anima-ip-salt-v1" # ip_hash 加盐（部署后建议改为随机串，避免默认值）
+
+# ---------- D1 任务状态/队列数据库（SQLite 兼容，强一致） ----------
+[[d1_databases]]
+binding = "DB"
+database_name = "anima-tasks"
+# 本地 dev 用占位 UUID 即可；部署前替换为 `npx wrangler d1 create anima-tasks` 返回的 database_id
+database_id = "7fd75e34-93cd-4d01-b41e-ba954c95b783"
+
+# ---------- KV 图片存储（替代 R2：免费 1GB / 10 万次读/天 / 1000 次写/天，无需银行卡） ----------
+[[kv_namespaces]]
+binding = "ANIMA_KV"
+id = "fd5962e8fffc4e64a656f10a6c16ce79"
+
+# ---------- Cron 兜底清理（每 15 分钟扫一次，超 30 分钟任务 + KV 图片，tech-design 3.3） ----------
+[triggers]
+crons = ["*/15 * * * *"]

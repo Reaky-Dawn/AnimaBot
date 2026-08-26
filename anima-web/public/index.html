@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Anima · 二次元自然语言生图" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <title>Anima · 二次元自然语言生图</title>
+  <link rel="stylesheet" href="styles/design-tokens.css" />
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body class="page-home">
+
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="index.html" aria-label="Anima 首页">
+        <span class="brand__icon" aria-hidden="true">✦</span>
+        <span class="brand__text">Anima</span>
+      </a>
+      <button class="topbar__admin" type="button" aria-haspopup="dialog" aria-label="站务说明">
+        <span class="icon" aria-hidden="true">ⓘ</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="site-main">
+
+    <!-- Hero 标题区 -->
+    <section class="hero" aria-labelledby="hero-title">
+      <h1 id="hero-title" class="hero__title">把脑内的画面，<br />说给它听</h1>
+      <p class="hero__sub">输入描述，让 Anima 为你绘制二次元插画</p>
+    </section>
+
+    <!-- 描述输入区 · 主卡片 -->
+    <section class="card card--primary" aria-labelledby="prompt-title">
+      <h2 id="prompt-title" class="card__title">描述你的画面</h2>
+      <div class="chips" id="example-chips" aria-label="示例提示"></div>
+      <p id="prompt-error" class="form-error" aria-live="polite"></p>
+      <form id="prompt-form" novalidate>
+        <label class="visually-hidden" for="prompt-input">画面描述</label>
+        <textarea
+          id="prompt-input"
+          class="prompt-input"
+          maxlength="500"
+          rows="5"
+          placeholder="例如：黄昏下的城市天台，少女回头微笑，风吹起发梢，暖色调……"></textarea>
+        <div class="prompt-form__row">
+          <span id="prompt-count" class="prompt-count" aria-live="polite">0 / 500</span>
+          <button id="generate-btn" class="btn btn--primary" type="submit">生成</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 参考图上传区 -->
+    <section class="card" aria-labelledby="ref-title">
+      <h2 id="ref-title" class="card__title">参考图（可选）</h2>
+      <div id="ref-uploader" class="uploader" role="button" tabindex="0" aria-label="上传参考图">
+        <span class="uploader__icon icon" aria-hidden="true">🖼</span>
+        <span class="uploader__main">点击或拖拽上传参考图</span>
+        <span class="uploader__sub">支持常见图片格式，≤5MB</span>
+      </div>
+      <p id="ref-error" class="form-error" aria-live="polite"></p>
+      <div id="ref-preview" class="uploader__preview"></div>
+      <p class="uploader__notice">不得上传未经授权的真人照片或他人作品</p>
+    </section>
+
+    <!-- 任务状态区（提交后出现） -->
+    <section class="card status-panel" aria-labelledby="status-title" hidden>
+      <h2 id="status-title" class="visually-hidden">任务进度</h2>
+      <ol class="progress"></ol>
+      <p id="status-terminal" class="status-terminal" hidden></p>
+    </section>
+
+    <!-- 广告区（占位） -->
+    <section class="ads" aria-label="广告">
+      <div class="ad-slot ad-slot--popunder">
+        <span class="ad-slot__label">广告</span>
+        <p class="ad-slot__text">Popunder 广告占位（Mainstream 类目）</p>
+        <p class="ad-slot__hint">部署后替换为真实广告</p>
+      </div>
+      <div class="ad-slot ad-slot--push">
+        <span class="ad-slot__label">广告</span>
+        <button class="ad-slot__close" type="button" aria-label="关闭广告占位">×</button>
+        <p class="ad-slot__text">In-Page Push 广告占位（Mainstream 类目）</p>
+        <p class="ad-slot__hint">部署后替换为真实广告</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <p class="footer__item">仅供内部使用</p>
+      <p class="footer__item">隐私与广告说明</p>
+      <p class="footer__item">Cookie 同意说明</p>
+      <p class="footer__item">站内图片均为「AI 生成」</p>
+    </div>
+  </footer>
+
+  <!-- Cookie 同意条（占位，Sprint 6 接入逻辑） -->
+  <div class="cookie-bar" role="dialog" aria-label="Cookie 同意" hidden>
+    <p class="cookie-bar__text">本站使用 Cookie 以提供基础服务，点击「知道了」继续。</p>
+    <button class="cookie-bar__btn btn btn--primary" type="button">知道了</button>
+  </div>
+
+  <!-- 站务说明浮层（Sprint 7 接入，AC-P0-22/D5：服务端配置说明、页面无开关） -->
+  <div id="admin-note" class="admin-note" role="dialog" aria-modal="true" aria-label="站务说明" hidden>
+    <div class="admin-note__card">
+      <button class="admin-note__close" type="button" aria-label="关闭站务说明">×</button>
+      <h2 class="admin-note__title">站务说明</h2>
+      <p class="admin-note__text">NSFW 拦截为服务端配置、默认开启、页面不设开关。政治敏感内容拦截始终开启，不可关闭。</p>
+    </div>
+  </div>
+
+  <script type="module" src="js/runtime/home.js"></script>
+</body>
+</html>

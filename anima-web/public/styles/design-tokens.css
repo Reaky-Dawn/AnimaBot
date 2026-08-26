@@ -1,0 +1,176 @@
+/* ==========================================================================
+   design-tokens.css —— 设计令牌（全项目样式变量唯一来源）
+   项目：星夜蓝调 · Anima 二次元自然语言生图网站
+   产出：ux-designer（视觉设计师）｜ 与 docs/visual-scheme.md「二、设计令牌」完全一致
+   约定：界面设计 / 前端实现一律引用本文件变量，禁止魔法值；
+         命名统一 --类别-名称（小写）；深色为默认态（方向 C 本身即深色）。
+   ========================================================================== */
+
+:root {
+  /* ========== 1. 色板 · 主色与辅助色 ========== */
+  --color-primary: #5b7cff;              /* 星蓝：品牌点缀、进度光晕、聚焦描边、强调 */
+  --color-primary-hover: #6b8bff;        /* 主色 hover 提亮 */
+  --color-primary-deep: #3d56e0;         /* 主按钮底色（深一档；白字对比 ≈4.9:1） */
+  --color-primary-deep-hover: #3349c9;   /* 主按钮 hover 加深 */
+  --color-aurora-purple: #8a6cf0;        /* 极光紫：极光渐变、装饰强调（徽章用深一档） */
+  --color-star-gold: #ffd166;            /* 星光金："广告"标签、重点提示 */
+  --color-stardust-cyan: #59c2e8;        /* 星尘青：链接、排队信息、空态引导 */
+
+  /* ========== 2. 色板 · 功能色 ========== */
+  --color-success: #3ed6a8;              /* 成功：任务完成、上传成功、步骤完成 */
+  --color-warning: #ffc069;              /* 警告：引擎维护、任务无效态 */
+  --color-error: #ff7a7a;                /* 错误：失败、超时、拦截拒绝、校验失败 */
+  --color-info: #59c2e8;                 /* 信息：排队进度、提示说明（与星尘青同值） */
+
+  /* ========== 3. 色板 · 文本色阶（深底浅字） ========== */
+  --text-primary: #edf0ff;               /* 星白：正文、标题（on #171B34 ≈13:1） */
+  --text-secondary: #a7afd9;             /* 次级文本、辅助说明（≈6.5:1） */
+  --text-tertiary: #8a93c4;              /* 注释、图标弱化（辅助层级 ≈5.6:1） */
+  --text-disabled: #6b739b;              /* 禁用态文字（禁用豁免） */
+  --color-placeholder: rgba(167, 175, 217, 0.7); /* 输入框占位文案 */
+
+  /* ========== 4. 色板 · 背景色阶 ========== */
+  --bg-page: #171b34;                    /* 深海蓝：页面底 */
+  --bg-card: #20264a;                    /* 卡片底（略提亮） */
+  --bg-elevated: #252c55;                /* 浮起层：下拉/弹层面板 */
+  --bg-gallery: #12152a;                 /* 结果图深色内衬（画廊式，比卡片更深） */
+  --bg-input: rgba(255, 255, 255, 0.06); /* 输入框填充 */
+  --bg-image-placeholder: rgba(255, 255, 255, 0.05); /* 图片加载占位底 */
+
+  /* ========== 5. 色板 · 玻璃拟态与描边 ========== */
+  --glass-fill: rgba(255, 255, 255, 0.05);  /* 玻璃卡填充 */
+  --glass-border: rgba(255, 255, 255, 0.1); /* 玻璃卡 1px 描边 */
+  --blur-glass: 12px;                       /* 玻璃卡背景模糊（backdrop-filter） */
+  --border-divider: rgba(255, 255, 255, 0.08); /* 分隔线、细描边 */
+  --border-input: rgba(255, 255, 255, 0.14);   /* 输入框描边 */
+  --border-input-focus: #5b7cff;               /* 输入框聚焦描边 */
+  --border-gallery: rgba(255, 255, 255, 0.08); /* 结果图容器细光晕描边 */
+
+  /* ========== 6. 色板 · 状态补充色 ========== */
+  --color-overlay: rgba(10, 13, 31, 0.78);  /* 灯箱/弹层遮罩（与页面同深） */
+  --color-star: rgba(237, 240, 255, 0.35);  /* CSS 星点（低亮度、仅装饰） */
+  --color-star-soft: rgba(237, 240, 255, 0.15); /* 星点弱化层/背景噪点 */
+  --color-focus-ring: rgba(91, 124, 255, 0.45); /* 键盘焦点环（focus-visible） */
+  --color-btn-secondary-bg: rgba(61, 86, 224, 0.22);    /* 次级按钮深蓝底 */
+  --color-btn-secondary-border: rgba(91, 124, 255, 0.45); /* 次级按钮蓝边 */
+  --color-btn-disabled-bg: rgba(255, 255, 255, 0.08);   /* 禁用按钮底 */
+  --color-btn-disabled-text: #6b739b;                   /* 禁用按钮文字 */
+  --color-progress-track: rgba(255, 255, 255, 0.1);     /* 进度轨道 */
+  --color-progress-fill: #5b7cff;                       /* 进度填充 */
+
+  /* ========== 7. 色板 · 广告与合规组件色（浅色化，深底上明暗反差可辨识） ========== */
+  --color-ad-card-bg: #ffffff;           /* 广告占位浅色卡片底 */
+  --color-ad-card-border: #171b34;       /* 广告卡片深色描边 */
+  --color-ad-label-bg: #ffd166;          /* 星光金"广告"标签底 */
+  --color-ad-label-text: #3b2e08;        /* 广告标签深色文字（≈9.3:1） */
+  --color-push-bg: #f7f9ff;              /* In-Page Push 浅色背景 */
+  --color-push-text: #2a3060;            /* Push 通知深色文字 */
+  --color-push-close: #5a6286;           /* Push 关闭按钮图标（浅底上 ≈5.6:1） */
+  --color-ai-badge-text: #ffffff;        /* "AI 生成"徽章文字 */
+
+  /* ========== 8. 渐变 ========== */
+  --gradient-aurora: linear-gradient(135deg, rgba(91, 124, 255, 0.3) 0%, rgba(138, 108, 240, 0.22) 55%, rgba(89, 194, 232, 0.16) 100%); /* 页顶角极光渐变（低饱和低亮度） */
+  --gradient-glow-aurora: linear-gradient(135deg, rgba(138, 108, 240, 0.18) 0%, rgba(91, 124, 255, 0.12) 50%, rgba(89, 194, 232, 0.1) 100%); /* 卡片边缘极光微光晕 */
+  --gradient-button: linear-gradient(135deg, #5b7cff 0%, #3d56e0 100%);      /* 主按钮星蓝渐变 */
+  --gradient-button-hover: linear-gradient(135deg, #6b8bff 0%, #3349c9 100%); /* 主按钮 hover 提亮 */
+  --gradient-ai-badge: linear-gradient(135deg, #7a5af0 0%, #3d56e0 100%);     /* "AI 生成"徽章渐变底（两端白字对比均 ≥4.6:1） */
+  --gradient-text-gold: linear-gradient(135deg, #ffd166 0%, #ffb84d 100%);    /* 星光金渐变文字（点缀） */
+  --gradient-text-blue: linear-gradient(135deg, #8fb3ff 0%, #5b7cff 100%);    /* 星蓝渐变文字（站点标识"Anima"，两端对比 ≈8.1:1 / ≈4.6:1） */
+
+  /* ========== 9. 字体层级 ========== */
+  --font-stack: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-display: "Smiley Sans", var(--font-stack); /* 得意黑（本地静态托管、只子集化标题字号，失败回退系统栈） */
+  --font-size-title-xl: 1.75rem;   /* 28px 页面主标题（得意黑 700） */
+  --font-size-title-lg: 1.375rem;  /* 22px 区块标题 */
+  --font-size-title-md: 1.125rem;  /* 18px 卡片标题 */
+  --font-size-body: 1rem;          /* 16px 正文 */
+  --font-size-aux: 0.875rem;       /* 14px 辅助文本、按钮文字 */
+  --font-size-caption: 0.8125rem;  /* 13px 注释、须知、页脚说明 */
+  --font-size-tag: 0.75rem;        /* 12px 徽章/标签（"AI 生成""广告"） */
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-title: 1.3;                 /* 标题行距 */
+  --line-height-body: 1.6;                  /* 正文行距 */
+  --letter-spacing-title: 0.02em;           /* 标题字距拉开 */
+  --font-variant-numeric: tabular-nums;     /* 进度/排队数字等宽，避免跳动 */
+
+  /* ========== 10. 间距体系（4 的倍数基准） ========== */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* ========== 11. 圆角 ========== */
+  --radius-xs: 4px;      /* 圆点、进度节点 */
+  --radius-sm: 8px;      /* 标签、徽章、缩略图 */
+  --radius-md: 16px;     /* 输入框、普通按钮、卡片（中圆角下限） */
+  --radius-lg: 20px;     /* 主卡片、弹层面板（中圆角上限） */
+  --radius-full: 999px;  /* 主按钮胶囊、星点、圆形图标按钮 */
+
+  /* ========== 12. 阴影与光晕 ========== */
+  --shadow-card: 0 8px 24px rgba(9, 12, 28, 0.35);         /* 普通卡片投影 */
+  --shadow-raised: 0 12px 32px rgba(9, 12, 28, 0.5);       /* 浮起：弹层、灯箱面板 */
+  --shadow-glow-blue: 0 0 20px rgba(91, 124, 255, 0.35);   /* 主按钮 glow 光晕 */
+  --shadow-glow-purple: 0 0 24px rgba(138, 108, 240, 0.25); /* 极光微光（AI 徽章、强调卡） */
+  --shadow-glow-gold: 0 0 16px rgba(255, 209, 102, 0.25);  /* 星光金提示条微光 */
+  --shadow-gallery-glow: 0 0 24px rgba(91, 124, 255, 0.15); /* 结果图容器细光晕 */
+
+  /* ========== 13. 图标/图片 ========== */
+  --icon-size-sm: 16px;
+  --icon-size-md: 20px;
+  --icon-size-lg: 24px;
+  --icon-size-xl: 48px;     /* 空态/任务无效态大图标（48px = 4px 基准 × 12，= --space-2xl） */
+  --img-radius: 12px;       /* 缩略图、上传预览 */
+  --img-radius-lg: 16px;    /* 结果图圆角 */
+  --thumb-size: 96px;       /* 上传参考图缩略预览 */
+  --gallery-padding: 12px;  /* 结果图深色内衬内边距 */
+
+  /* ========== 14. 尺寸与可点击目标（≥44px） ========== */
+  --touch-target: 44px;       /* 最小可点击目标 */
+  --btn-min-height: 44px;     /* 按钮最小高度（主按钮 48px） */
+  --input-min-height: 44px;   /* 输入控件最小高度 */
+  --input-min-height-textarea: 120px; /* 描述输入 textarea 最小高；上传空框与之对齐复用（120px = 4px 基准 × 30） */
+  --progress-node-size: 24px; /* 进度步骤节点直径（4px 基准 × 6，= --space-lg） */
+  --progress-node-gap: 24px;  /* 进度节点间距（横向 5 节点排布，= --space-lg；移动端纵向改用 --space-md 16px） */
+  --progress-line-width: 2px; /* 进度节点间连线粗细（横向连线高 / 纵向连线宽） */
+  --container-max: 1080px;    /* 内容最大宽度 */
+  --cookie-bar-max-width: 360px; /* Cookie 同意条最大宽度（桌面右下角浮条；移动端全宽） */
+
+  /* ========== 15. 响应式断点与安全区 ========== */
+  --breakpoint-lg: 1024px;        /* 桌面 */
+  --breakpoint-md: 768px;         /* 平板 */
+  --breakpoint-mobile-max: 767px; /* 移动 320-767 */
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px); /* 移动端底部安全区（固定条/页脚/浮条必须使用） */
+
+  /* ========== 16. 动效与层叠 ========== */
+  --duration-fast: 0.15s;                        /* 微交互 */
+  --duration-normal: 0.25s;                      /* 常规过渡 */
+  --duration-jump-pause: 1.5s;                   /* 任务终态（完成/失败）自动跳转结果页前的停留时长（UX 时序） */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* 标准缓动 */
+  --z-push: 900;        /* In-Page Push 浮条 */
+  --z-toast: 1000;      /* 提示条/Toast */
+  --z-overlay: 1100;    /* 弹层遮罩 */
+  --z-lightbox: 1200;   /* 放大灯箱 */
+
+  /* ========== 17. 深色模式 ========== */
+  /* 方向 C 本身即深色：深色为默认态，无额外暗色变量，也不存在浅色模式切换。
+     广告容器 / In-Page Push 通知条刻意浅色化属"广告可辨识"合规设计，非模式切换。 */
+}
+
+/* ========== 18. 动效降级：prefers-reduced-motion 时关闭星点闪烁/光晕/进度动画 ========== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

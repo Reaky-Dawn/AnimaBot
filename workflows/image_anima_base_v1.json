@@ -1,0 +1,160 @@
+{
+  "2": {
+    "inputs": {
+      "clip_name": "miaomiaoHarem_anima12_txt.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "7": {
+    "inputs": {
+      "width": 920,
+      "height": 1536,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "8": {
+    "inputs": {
+      "text": "masterpiece, best quality, very aesthetic, score_7, score_9, safe, (upper body:1.2), (feet out of frame:1.1), 2girls, duo, kiss, hug, hand on another's cheek, closed eyes, koharu \\(blue archive\\), blue archive, kurumi \\(blue archive\\), school, grid background, sidelighting, @wfa5051",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "正面文本编码1"
+    }
+  },
+  "9": {
+    "inputs": {
+      "text": "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "负面文本编码"
+    }
+  },
+  "10": {
+    "inputs": {
+      "seed": 896352575357436,
+      "steps": 30,
+      "cfg": 5,
+      "sampler_name": "euler",
+      "scheduler": "beta57",
+      "denoise": 1,
+      "model": [
+        "31",
+        0
+      ],
+      "positive": [
+        "27",
+        0
+      ],
+      "negative": [
+        "9",
+        0
+      ],
+      "latent_image": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "11": {
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "26": {
+    "inputs": {
+      "text": "The composition is an upper body shot with feet out of frame, showing Koharu and Kurumi facing each other closely. Kurumi gently places her hand on Koharu's cheek as they share a kiss with closed eyes, illuminated by warm sidelighting from the sun. On the table in front, a stuffed toy, a heart, and flowers are arranged against the school grid background.",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "正面文本编码2"
+    }
+  },
+  "27": {
+    "inputs": {
+      "conditioning_to": [
+        "8",
+        0
+      ],
+      "conditioning_from": [
+        "26",
+        0
+      ]
+    },
+    "class_type": "ConditioningConcat",
+    "_meta": {
+      "title": "条件连接"
+    }
+  },
+  "31": {
+    "inputs": {
+      "unet_name": "miaomiaoHarem_anima12_int8convrot_00001_.safetensors",
+      "weight_dtype": "default",
+      "model_type": "anima",
+      "on_the_fly_quantization": false,
+      "enable_convrot": true,
+      "lora_mode": "Stochastic"
+    },
+    "class_type": "OTUNetLoaderW8A8",
+    "_meta": {
+      "title": "Load Diffusion Model INT8 (W8A8)"
+    }
+  },
+  "35": {
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "ImageDataOutput",
+    "_meta": {
+      "title": "ImageDataOutput"
+    }
+  }
+}

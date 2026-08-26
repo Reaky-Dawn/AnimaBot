@@ -1,0 +1,10 @@
+{
+  "providers": [
+    { "api_key": "", "base_url": "" },
+    { "api_key": "", "base_url": "" },
+    { "api_key": "", "base_url": "" },
+    { "api_key": "", "base_url": "" }
+  ],
+  "model": "deepseek-v4-flash",
+  "logging": true
+}

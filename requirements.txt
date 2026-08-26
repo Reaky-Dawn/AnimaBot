@@ -1,0 +1,15 @@
+openai
+lxml
+httpx
+pandas
+numpy
+onnx
+onnxruntime
+pillow
+huggingface_hub
+dghs-imgutils >= 0.19.0
+
+# 注：Sprint 8 改造已移除 NapCat（websockets 不再需要）。
+# oxipng 为外部二进制（无损重压缩，NFR-25），可选安装：
+#   apt-get install -y oxipng  （或 pip install oxipng-py / 自行下载 oxipng）
+# 未安装时引擎跳过压缩，不影响流程。

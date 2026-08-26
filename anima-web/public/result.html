@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Anima · 生成结果" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <title>Anima · 生成结果</title>
+  <link rel="stylesheet" href="styles/design-tokens.css" />
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body class="page-result">
+
+  <!-- 顶部栏 -->
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="index.html" aria-label="Anima 首页">
+        <span class="brand__icon" aria-hidden="true">✦</span>
+        <span class="brand__text">Anima</span>
+      </a>
+      <span id="task-badge" class="topbar__task" aria-label="任务编号">任务 #----</span>
+    </div>
+  </header>
+
+  <main class="site-main">
+
+    <!-- 结果展示区 · 画廊 -->
+    <section class="gallery" aria-label="生成结果">
+      <div class="gallery__frame">
+        <span class="ai-badge" aria-hidden="true">AI 生成</span>
+        <img id="result-img" class="gallery__img" alt="AI 生成图片" hidden />
+        <div id="gallery-placeholder" class="gallery__placeholder">
+          <span class="icon" aria-hidden="true">✦</span>
+          <span class="gallery__placeholder-text">图片加载中…</span>
+        </div>
+      </div>
+      <!-- 失败态卡（Sprint 5 接入；替代画廊展示） -->
+      <div id="fail-card" class="fail-card" hidden>
+        <span class="fail-card__icon icon" aria-hidden="true">⚠</span>
+        <p class="fail-card__text">生成失败，请重试</p>
+        <!-- Sprint 10：不可挽回错误时展示完整日志（折叠区） -->
+        <div id="fail-card__log" class="fail-card__log" hidden>
+          <button id="fail-card__log-toggle" class="fail-card__log-toggle" type="button" aria-expanded="false">查看完整日志 ▾</button>
+          <pre id="fail-card__log-body" class="fail-card__log-body" hidden></pre>
+        </div>
+        <button id="retry-btn" class="btn btn--secondary" type="button">重试</button>
+      </div>
+    </section>
+
+    <!-- 操作区 -->
+    <section class="actions" aria-label="操作">
+      <div class="actions__primary">
+        <button class="btn btn--primary" type="button" disabled>下载 PNG</button>
+        <button class="btn btn--primary" type="button" disabled>下载 JPEG</button>
+      </div>
+      <div class="actions__secondary">
+        <button class="btn btn--secondary" type="button" disabled>放大 4x</button>
+      </div>
+      <div class="actions__return">
+        <button class="btn btn--secondary" type="button" disabled>再生成一张</button>
+      </div>
+    </section>
+
+    <!-- 使用提示区 -->
+    <section class="notice" aria-label="使用提示">
+      <p class="notice__text"><span class="icon" aria-hidden="true">🔒</span> 请勿外传链接</p>
+    </section>
+
+    <!-- 广告区（占位） -->
+    <section class="ads" aria-label="广告">
+      <div class="ad-slot ad-slot--popunder">
+        <span class="ad-slot__label">广告</span>
+        <p class="ad-slot__text">Popunder 广告占位（Mainstream 类目）</p>
+        <p class="ad-slot__hint">部署后替换为真实广告</p>
+      </div>
+      <div class="ad-slot ad-slot--push">
+        <span class="ad-slot__label">广告</span>
+        <button class="ad-slot__close" type="button" aria-label="关闭广告占位">×</button>
+        <p class="ad-slot__text">In-Page Push 广告占位（Mainstream 类目）</p>
+        <p class="ad-slot__hint">部署后替换为真实广告</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <p class="footer__item">仅供内部使用</p>
+      <p class="footer__item">隐私与广告说明</p>
+      <p class="footer__item">Cookie 同意说明</p>
+      <p class="footer__item">站内图片均为「AI 生成」</p>
+    </div>
+  </footer>
+
+  <!-- 放大灯箱（占位，Sprint 5 接入） -->
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="图片放大查看" hidden>
+    <button class="lightbox__close" type="button" aria-label="关闭放大查看">×</button>
+    <figure class="lightbox__frame">
+      <span class="ai-badge" aria-hidden="true">AI 生成</span>
+      <img id="lightbox-img" class="lightbox__img" alt="AI 生成图片（放大）" />
+    </figure>
+  </div>
+
+  <!-- 任务无效态（占位，Sprint 5 接入） -->
+  <div id="invalid-card" class="invalid-card" hidden>
+    <span class="invalid-card__icon icon" aria-hidden="true">✦</span>
+    <h2 class="invalid-card__title">任务不存在或已过期</h2>
+    <p class="invalid-card__desc">任务数据即用即删，生成完成后链接即失效，请回到主页重新生成</p>
+    <a class="btn btn--primary" href="index.html">返回主页</a>
+  </div>
+
+  <!-- Cookie 同意条（Sprint 6 接入逻辑） -->
+  <div class="cookie-bar" role="dialog" aria-label="Cookie 同意" hidden>
+    <p class="cookie-bar__text">本站使用 Cookie 以提供基础服务，点击「知道了」继续。</p>
+    <button class="cookie-bar__btn btn btn--primary" type="button">知道了</button>
+  </div>
+
+  <script type="module" src="js/runtime/result.js"></script>
+</body>
+</html>

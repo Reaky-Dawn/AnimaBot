@@ -1,0 +1,14 @@
+{
+  "name": "anima-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Anima 二次元自然语言生图网站 · Cloudflare Worker（静态资产 + /api/* 动态接口 + D1 + R2）",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

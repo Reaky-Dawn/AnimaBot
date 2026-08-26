@@ -1,0 +1,7 @@
+# Cloudflare Static Assets 响应头（Sprint 1：noindex 双保险之一，AC-P0-26）
+# 依据：docs/tech-design.md v2.0 第 11 节（meta robots + robots.txt + X-Robots-Tag 三层）
+# 注意：本文件作用于 public/ 下所有静态资源响应头。
+/*
+  X-Robots-Tag: noindex, nofollow
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
