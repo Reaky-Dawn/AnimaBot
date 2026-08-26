@@ -237,7 +237,7 @@ async def expand_zh_tags(
     )
 
     print("-"*10)
-    print(resp.choices[0].message.reasoning_content)
+    print(getattr(resp.choices[0].message, "reasoning_content", None))
     print("-"*10)
 
     llm_output = resp.choices[0].message.content
@@ -287,7 +287,7 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
         )
 
         print("-"*10)
-        print(resp.choices[0].message.reasoning_content)
+        print(getattr(resp.choices[0].message, "reasoning_content", None))
         print("-"*10)
     except Exception as e:
         logger.warning("画风画师选择失败，将使用加权采样: %s", e)
@@ -358,7 +358,7 @@ async def agent(
     )
 
     print("-"*10)
-    print(resp.choices[0].message.reasoning_content)
+    print(getattr(resp.choices[0].message, "reasoning_content", None))
     print("-"*10)
     
     prompt_content = resp.choices[0].message.content
