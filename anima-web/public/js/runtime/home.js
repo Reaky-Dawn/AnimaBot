@@ -87,6 +87,9 @@ function initHome() {
    */
   function startWatching(taskLike) {
     if (watcher) watcher.stop();
+    let recoverErrorCount = 0; // 连续网络异常计数（超出则解锁，避免永久"生成中"）
+    const MAX_RECOVER_ERRORS = 6;
+
     watcher = watchTask({
       id: taskLike.id,
       taskToken: taskLike.taskToken,
@@ -102,17 +105,35 @@ function initHome() {
         // rejected：提示后恢复可编辑，不跳结果页
         const reason = t && t.failureReason;
         showToast(reason === 'sensitive_rejected' ? '内容不符合要求' : '内容不符合站点要求', 'error');
-        unlockAllTabs();
-        hideStatus();
+        recoverAbort();
       },
       onError: (err) => {
+        // Sprint 11 修复：任务不存在时绝不能继续停留"生成中"，需解锁并退出轮询
         if (err && err.code === API_ERROR.NOT_FOUND) {
-          showToast('任务不存在或已过期', 'error');
+          showToast('任务不存在或已过期，请重新生成', 'error');
+          recoverAbort();
+          return;
+        }
+        // 网络异常：退避重试，但设上限防永久卡住
+        recoverErrorCount += 1;
+        if (recoverErrorCount >= MAX_RECOVER_ERRORS) {
+          showToast('连接异常，请刷新后重试', 'error');
+          recoverAbort();
         } else {
           showToast('连接异常，正在重试…', 'error');
         }
       },
     });
+
+    function recoverAbort() {
+      if (watcher) { watcher.stop(); watcher = null; }
+      busy = false;
+      unlockAllTabs();
+      hideStatus();
+      clearTaskMeta();
+      clearTaskRef();
+      clearRetryMeta();
+    }
   }
 
   function scheduleJump(taskId) {
