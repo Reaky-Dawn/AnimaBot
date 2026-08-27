@@ -351,9 +351,22 @@ async def process_task(task: dict):
 
 # ===== 主循环 =====
 
-async def main():
+def _validate_env():
+    """启动前校验关键环境变量（Sprint 11 修复：缺配置时给出明确报错而非循环刷 Illegal header）。"""
+    problems = []
     if not ENGINE_KEY:
-        log("[engine] 警告：未设置 ENGINE_KEY 环境变量（Worker 会拒绝引擎接口）")
+        problems.append("ENGINE_KEY 为空：请在 notebook 单元格 1 设置与 Worker secret 一致的 ENGINE_KEY"
+                        "（否则 Authorization 头为 'Bearer ' 非法，引擎无法访问 Worker）")
+    if WORKER_BASE_URL in ("", "http://127.0.0.1:8787", "https://anima.example.com"):
+        problems.append(f"WORKER_BASE_URL 未正确设置（当前={WORKER_BASE_URL}）：应填 https://anima-web.chenzilong315.workers.dev")
+    if problems:
+        for p in problems:
+            log(f"[engine] 配置错误: {p}")
+        raise SystemExit("引擎配置错误，请先修正环境变量后重启")
+
+
+async def main():
+    _validate_env()
     log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，轮询间隔 {POLL_INTERVAL}s，ENGINE_ID={ENGINE_ID}")
     await fetch_nsfw_flag(force=True)
 
