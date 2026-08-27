@@ -37,6 +37,21 @@ def log(*args, **kwargs):
 
 _nsfw_tag_set = None
 
+
+def _open_tags_csv():
+    """以兼容方式打开 tags_enhanced.csv。
+
+    该文件的中文列（cn_name/wiki）为 GBK/GB18030 编码，直接 utf-8 读取会抛
+    UnicodeDecodeError（'utf-8' codec can't decode byte ...）。先尝试 utf-8，
+    失败则回退 gb18030（GBK 超集，可解码全部中文编码）。仅需 name/nsfw 两列。
+    """
+    for enc in ("utf-8", "gb18030"):
+        try:
+            return open(TAGS_CSV_PATH, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return open(TAGS_CSV_PATH, encoding="gb18030")  # 兜底
+
 def load_nsfw_tag_set():
     """从 tags_enhanced.csv 加载 nsfw 标签集（Danbooru 标签分级）。"""
     global _nsfw_tag_set
@@ -44,7 +59,7 @@ def load_nsfw_tag_set():
         return _nsfw_tag_set
     _nsfw_tag_set = set()
     try:
-        with open(TAGS_CSV_PATH, encoding="utf-8") as f:
+        with _open_tags_csv() as f:
             for row in csv.DictReader(f):
                 if row.get("nsfw", "0") == "1":
                     _nsfw_tag_set.add(row["name"].strip())

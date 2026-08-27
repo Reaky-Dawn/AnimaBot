@@ -118,7 +118,7 @@ async def select_reference_image_tags(
         )
 
         print("-"*10)
-        print(resp.choices[0].message.reasoning_content)
+        print(getattr(resp.choices[0].message, "reasoning_content", None))
         print("-"*10)
     except Exception as e:
         logger.warning("参考图选择节点调用失败，将默认全部保留: %s", e)

@@ -335,137 +335,6 @@ export function createGenerateButton(btn, onSubmit) {
   return { setDisabled, lock, unlock };
 }
 
-/**
- * TaskStatusPanel —— 5 节点进度条组件（Sprint 4）
- * 职责：渲染 排队中 → 提示词构思中 → 提示词完成 → 绘制中 → 完成/失败 五节点；
- *       节点只前进不回退（AC-P0-02）；节点 1 排队"前方等待 N 人"（F07）；
- *       完成绿勾 / 当前星蓝 glow / 待办轨道；aria-live 播报进度变化。
- * 参数：root（ol.progress 元素）
- * 依据：docs/interface-design.md 2.1.3（节点进度条）、design-tokens.css（--progress-* 令牌）
- * 层级：ui（仅引用 types 常量，业务通过 update() 数据驱动）
- */
-export function createTaskStatusPanel(root) {
-  // NODE_MAP 中 FAILED 与 DONE 同 stage 5，去重后为 5 个节点
-  const nodes = [];
-  NODE_MAP.forEach((n) => { if (!nodes.some((x) => x.stage === n.stage)) nodes.push(n); });
-
-  let maxStage = 1;
-  let lastStage = 0;
-
-  // ===== 渲染 =====
-  function build() {
-    root.innerHTML = '';
-    nodes.forEach((n) => {
-      const li = document.createElement('li');
-      li.className = 'progress__item';
-      li.dataset.stage = String(n.stage);
-
-      const dot = document.createElement('span');
-      dot.className = 'progress__dot';
-      dot.setAttribute('aria-hidden', 'true');
-      dot.textContent = String(n.stage);
-
-      const text = document.createElement('span');
-      text.className = 'progress__text';
-      const label = document.createElement('span');
-      label.className = 'progress__label';
-      label.textContent = n.label;
-      const hint = document.createElement('span');
-      hint.className = 'progress__hint';
-      hint.dataset.hint = '';
-      text.appendChild(label);
-      text.appendChild(hint);
-
-      li.appendChild(dot);
-      li.appendChild(text);
-      root.appendChild(li);
-    });
-  }
-
-  // ===== 状态更新（只前进） =====
-  /**
-   * @param {Object} s
-   * @param {number} s.stage    当前最大节点（1-5）
-   * @param {number} [s.queuePos] 排队位置（节点 1 显示"前方等待 N 人"）
-   * @param {string} s.status   TASK_STATUS 值
-   */
-  function update(s) {
-    let { stage, queuePos = 0, status } = s;
-    // 防御：stage 回退时忽略（节点只前进，AC-P0-02）
-    if (stage < maxStage) stage = maxStage;
-    else maxStage = stage;
-
-    const doneTerminal = status === TASK_STATUS.DONE && stage === 5;
-    const failedTerminal = status === TASK_STATUS.FAILED && stage === 5;
-    const terminal = doneTerminal || failedTerminal;
-
-    const stageChanged = stage !== lastStage;
-    lastStage = stage;
-
-    root.querySelectorAll('.progress__item').forEach((li) => {
-      const s2 = Number(li.dataset.stage);
-      const isDoneNode = s2 < stage;
-      const isLastNode = s2 === 5;
-
-      li.classList.toggle('is-done', isDoneNode || doneTerminal);
-      li.classList.toggle('is-current', s2 === stage && !terminal);
-      li.classList.toggle('is-failed', failedTerminal && isLastNode);
-      li.classList.toggle('is-pending', s2 > stage);
-
-      const dot = li.querySelector('.progress__dot');
-      dot.textContent = (isDoneNode || doneTerminal) ? '✓' : (failedTerminal && isLastNode) ? '✕' : String(s2);
-
-      // 失败终态：节点 5 步骤名换"失败"
-      const label = li.querySelector('.progress__label');
-      if (failedTerminal && isLastNode) label.textContent = '失败';
-
-      // 动态小字
-      const hint = li.querySelector('.progress__hint');
-      if (s2 === 1 && stage === 1 && status === TASK_STATUS.QUEUED) {
-        // 队列为空（queuePos=0）不显示等待人数（AC-P0-13 后半）
-        hint.textContent = queuePos > 0 ? `前方等待 ${queuePos} 人` : '';
-      } else if (s2 === 4 && stage === 4 && status === TASK_STATUS.DRAWING) {
-        hint.textContent = '正在绘制，稍等片刻～';
-      } else {
-        hint.textContent = '';
-      }
-    });
-
-    // aria-live 播报（仅节点前进时；终态单列）
-    if (stageChanged) {
-      if (doneTerminal) {
-        announce('任务已完成');
-      } else if (failedTerminal) {
-        announce('任务失败');
-      } else {
-        const n = nodes.find((x) => x.stage === stage);
-        if (n) announce(`任务进入「${n.label}」`);
-      }
-    }
-
-    return { stage: maxStage };
-  }
-
-  /** 播报（role=status 的 visually-hidden 节点，NFR-21 无障碍） */
-  function announce(msg) {
-    const live = document.createElement('div');
-    live.setAttribute('role', 'status');
-    live.className = 'visually-hidden';
-    live.textContent = msg;
-    document.body.appendChild(live);
-    setTimeout(() => live.remove(), 800);
-  }
-
-  function reset() {
-    maxStage = 1;
-    lastStage = 0;
-    build();
-  }
-
-  build();
-  return { root, update, announce, reset };
-}
-
 // ===== 结果页组件（Sprint 5） =====
 // 注意：ui 层不引用 service/repo，仅渲染 + 回调通知 runtime。
 
@@ -480,6 +349,43 @@ export const FAILURE_COPY = {
 };
 export function failureReasonText(reason) {
   return FAILURE_COPY[reason] || '生成失败，请重试';
+}
+
+/**
+ * Sprint 11：把 engine_log（JSON 数组）折叠成一句「卡在某一步」的简要文案。
+ * 完整错误明细不在网页展示（由 Kaggle 侧独立 error log 落盘），此处仅取
+ * 倒数第二个非终态步骤名，告诉用户大致卡在哪一步。
+ * @param {string|Array|null} engineLog
+ * @returns {string|null} 简要文案（无则 null）
+ */
+export function stuckStepText(engineLog) {
+  if (!engineLog) return null;
+  let arr = engineLog;
+  if (typeof engineLog === 'string') {
+    try { arr = JSON.parse(engineLog); } catch { return null; }
+  }
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const stepNameMap = {
+    claim: '排队',
+    ref_downloaded: '获取参考图',
+    ref_download_failed: '获取参考图',
+    params_parsed: '解析参数',
+    prompt_generated: '生成提示词',
+    nsfw_checked: '内容检查',
+    nsfw_rejected: '内容检查',
+    prompt_done: '整理提示词',
+    drawing_start: '绘制开始',
+    drawing_done: '绘制完成',
+    postprocess_done: '后处理',
+    result_uploaded: '上传结果',
+    failed: '收尾',
+  };
+  // 取最后一个步骤；若最后一个是 failed，回溯到失败前实际卡住的动作
+  const last = arr[arr.length - 1];
+  let step = last;
+  if (step.action === 'failed' && arr.length >= 2) step = arr[arr.length - 2];
+  const label = stepNameMap[step.action] || step.action;
+  return `卡在「${label}」`;
 }
 
 /**
@@ -523,13 +429,13 @@ export function createResultGallery(root) {
 /**
  * ActionBar —— 操作区（结果页）
  * 参数：root（.actions 容器）
- * 按钮：下载 PNG / 下载 JPEG（主）、放大 4x（M2 占位禁用）、再生成一张（返回区）
- * 返回：{ setEnabled(main, regen), onDownloadPng, onDownloadJpeg, onRegenerate, onUpscale, setUpscaleLoading }
+ * 按钮：下载 PNG / 下载 JPEG（主）、再生成一张（返回区）。
+ * Sprint 11：4x 放大已移至主页「4x 放大」子页，结果页不再展示该按钮。
+ * 返回：{ setEnabled(main, regen), onDownloadPng, onDownloadJpeg, onRegenerate }
  */
 export function createActionBar(root) {
   const btnPng = root.querySelector('.actions__primary .btn--primary:first-child');
   const btnJpeg = root.querySelector('.actions__primary .btn--primary:last-child');
-  const btnUpscale = root.querySelector('.actions__secondary .btn--secondary');
   const btnRegen = root.querySelector('.actions__return .btn');
 
   function setEnabled(main, regen) {
@@ -540,13 +446,9 @@ export function createActionBar(root) {
   const onDownloadPng = (cb) => { if (btnPng) btnPng.addEventListener('click', cb); };
   const onDownloadJpeg = (cb) => { if (btnJpeg) btnJpeg.addEventListener('click', cb); };
   const onRegenerate = (cb) => { if (btnRegen) btnRegen.addEventListener('click', cb); };
-  const onUpscale = (cb) => { if (btnUpscale) btnUpscale.addEventListener('click', cb); };
-  const setUpscaleLoading = (loading) => {
-    if (btnUpscale) btnUpscale.textContent = loading ? '放大中…' : '放大 4x';
-  };
 
   setEnabled(false, false);
-  return { setEnabled, onDownloadPng, onDownloadJpeg, onRegenerate, onUpscale, setUpscaleLoading };
+  return { setEnabled, onDownloadPng, onDownloadJpeg, onRegenerate };
 }
 
 /**
@@ -609,77 +511,23 @@ export function createInvalidCard(root) {
 }
 
 /**
- * FailCard —— 失败态卡（Sprint 10：支持完整日志折叠区）
+ * FailCard —— 失败态卡（Sprint 11：仅展示简要错误 + 卡在哪一步）
+ * 完整错误明细在 Kaggle 独立 error log（网页不展示折叠日志）。
  * 参数：root
  * 返回：{ show(reasonText, engineLog?), hide() }
  */
 export function createFailCard(root) {
   const icon = root.querySelector('.fail-card__icon');
   const text = root.querySelector('.fail-card__text');
-  const logWrap = root.querySelector('.fail-card__log');
-  const logToggle = root.querySelector('.fail-card__log-toggle');
-  const logBody = root.querySelector('.fail-card__log-body');
-
-  // 折叠切换（首次展开填充内容）
-  if (logToggle && logBody) {
-    logToggle.addEventListener('click', () => {
-      const expanded = logToggle.getAttribute('aria-expanded') === 'true';
-      logToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-      logToggle.textContent = expanded ? '查看完整日志 ▾' : '收起完整日志 ▴';
-      logBody.hidden = expanded;
-    });
-  }
-
-  // 把 engine_log（JSON 数组）渲染为可读时间线文本
-  function formatLog(engineLog) {
-    if (!engineLog) return '';
-    let arr = engineLog;
-    if (typeof engineLog === 'string') {
-      try { arr = JSON.parse(engineLog); } catch (e) { return engineLog; }
-    }
-    if (!Array.isArray(arr)) return String(engineLog);
-    const nameMap = {
-      claim: '任务接管',
-      ref_downloaded: '参考图获取',
-      ref_download_failed: '参考图获取失败',
-      params_parsed: '参数解析',
-      prompt_generated: '提示词生成',
-      nsfw_checked: 'NSFW 检查',
-      nsfw_rejected: 'NSFW 拦截',
-      prompt_done: '提示词完成',
-      drawing_start: '绘制开始',
-      drawing_done: '绘制完成',
-      postprocess_done: '后处理（压缩/元数据）',
-      result_uploaded: '结果上传',
-      done: '完成',
-      failed: '失败',
-    };
-    return arr
-      .map((s) => {
-        const t = new Date(s.ts || 0);
-        const clock = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}:${String(t.getSeconds()).padStart(2, '0')}`;
-        const label = nameMap[s.action] || s.action;
-        const elapsed = s.elapsed != null ? `（+${s.elapsed}s）` : '';
-        return `▸ ${clock}${elapsed} ${label}${s.detail ? '\n   ' + s.detail : ''}`;
-      })
-      .join('\n');
-  }
+  const stuckEl = root.querySelector('.fail-card__stuck');
 
   function show(reason, engineLog) {
     root.hidden = false;
     if (text) text.textContent = reason;
-    // 有完整日志才展示折叠入口
-    if (logWrap && logBody) {
-      const bodyText = formatLog(engineLog);
-      if (bodyText) {
-        logWrap.hidden = false;
-        logBody.textContent = bodyText;
-        logToggle.setAttribute('aria-expanded', 'false');
-        logToggle.textContent = '查看完整日志 ▾';
-        logBody.hidden = true;
-      } else {
-        logWrap.hidden = true;
-      }
+    if (stuckEl) {
+      const stuck = stuckStepText(engineLog);
+      stuckEl.textContent = stuck ? `生成过程中${stuck}` : '';
+      stuckEl.hidden = !stuck;
     }
   }
   function hide() { root.hidden = true; }
@@ -744,31 +592,51 @@ export function initPushAdClose(scope = document) {
 }
 
 /**
- * AdminNoteDialog —— 站务说明浮层（Sprint 7，AC-P0-22 / D5）
- * 职责：顶部栏 ⓘ 打开 → 展示"NSFW 拦截为服务端配置、默认开启、页面不设开关"；
- *       关闭按钮 / Esc / 点遮罩关闭；焦点移入关闭按钮、关闭后归还触发元素。
- * 参数：root（.admin-note 容器）
- * 返回：{ open(), close() }
+ * parsePngMetadata —— 客户端解析 PNG 文本元数据（tEXt / iTXt / zTXt 块）。
+ * 返回 {key: value} 映射；无元数据时返回 {}。
+ * @param {ArrayBuffer} buffer
+ * @returns {Object}
  */
-export function createAdminNoteDialog(root) {
-  const closeBtn = root.querySelector('.admin-note__close');
-  let lastFocus = null;
+export function parsePngMetadata(buffer) {
+  const bytes = new Uint8Array(buffer);
+  // PNG 签名：8 字节
+  if (bytes.length < 8) return {};
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i++) { if (bytes[i] !== sig[i]) return {}; }
 
-  function open() {
-    lastFocus = document.activeElement;
-    root.hidden = false;
-    if (closeBtn) setTimeout(() => closeBtn.focus(), 100);
+  const meta = {};
+  let pos = 8;
+  // 安全限制：最多扫描 100 块或 10MB
+  const maxChunks = 100;
+  const maxBytes = 10 * 1024 * 1024;
+  for (let c = 0; c < maxChunks && pos + 8 <= bytes.length && pos < maxBytes; c++) {
+    const len = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
+    const type = String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]);
+    if (type === 'IEND') break;
+    if ((type === 'tEXt' || type === 'iTXt' || type === 'zTXt') && pos + 8 + len <= bytes.length) {
+      const chunk = new Uint8Array(bytes.buffer, bytes.byteOffset + pos + 8, len);
+      if (type === 'zTXt') {
+        // zTXt 压缩略复杂，跳过
+      } else {
+        // tEXt / iTXt: null-terminated key, then value
+        let nullIdx = -1;
+        for (let i = 0; i < chunk.length; i++) {
+          if (chunk[i] === 0) { nullIdx = i; break; }
+        }
+        if (nullIdx >= 0) {
+          const key = new TextDecoder().decode(chunk.slice(0, nullIdx));
+          const value = new TextDecoder().decode(chunk.slice(nullIdx + 1));
+          if (key) meta[key] = value;
+        }
+      }
+    }
+    pos += 12 + len;
+    if (pos + 8 > bytes.length) break;
   }
-  function close() {
-    root.hidden = true;
-    if (lastFocus && lastFocus.focus) lastFocus.focus();
-  }
-
-  if (closeBtn) closeBtn.addEventListener('click', close);
-  root.addEventListener('click', (e) => { if (e.target === root) close(); });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !root.hidden) close();
-  });
-
-  return { open, close };
+  return meta;
 }
+
+/**
+ * initPushAdClose —— In-Page Push 广告占位关闭按钮（占位期关闭即隐藏容器）
+ * 参数：scope（默认 document，供两页初始化）
+ */

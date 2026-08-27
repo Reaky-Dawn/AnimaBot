@@ -35,15 +35,11 @@
           <span class="gallery__placeholder-text">图片加载中…</span>
         </div>
       </div>
-      <!-- 失败态卡（Sprint 5 接入；替代画廊展示） -->
+      <!-- 失败态卡（Sprint 11：仅简要错误，完整明细在 Kaggle error log） -->
       <div id="fail-card" class="fail-card" hidden>
         <span class="fail-card__icon icon" aria-hidden="true">⚠</span>
         <p class="fail-card__text">生成失败，请重试</p>
-        <!-- Sprint 10：不可挽回错误时展示完整日志（折叠区） -->
-        <div id="fail-card__log" class="fail-card__log" hidden>
-          <button id="fail-card__log-toggle" class="fail-card__log-toggle" type="button" aria-expanded="false">查看完整日志 ▾</button>
-          <pre id="fail-card__log-body" class="fail-card__log-body" hidden></pre>
-        </div>
+        <p id="fail-card__stuck" class="fail-card__stuck" hidden></p>
         <button id="retry-btn" class="btn btn--secondary" type="button">重试</button>
       </div>
     </section>
@@ -53,9 +49,6 @@
       <div class="actions__primary">
         <button class="btn btn--primary" type="button" disabled>下载 PNG</button>
         <button class="btn btn--primary" type="button" disabled>下载 JPEG</button>
-      </div>
-      <div class="actions__secondary">
-        <button class="btn btn--secondary" type="button" disabled>放大 4x</button>
       </div>
       <div class="actions__return">
         <button class="btn btn--secondary" type="button" disabled>再生成一张</button>

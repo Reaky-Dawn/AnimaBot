@@ -6,10 +6,17 @@ import httpx
 from utils import log
 
 # 在此配置你的 ComfyUI 实例地址
-COMFY_HOSTS = ["http://127.0.0.1:8188"]
+# Kaggle notebook 启动 2 个实例：8188（cuda:0）+ 8189（cuda:1），两端口都纳入候选
+COMFY_HOSTS = ["http://127.0.0.1:8188", "http://127.0.0.1:8189"]
 
 # Sprint 10：请求超时下限 600s（原值 5 → 600；run_workflow 的 timeout=3000 已 >600 不动）
 REQUEST_TIMEOUT = 600
+
+# ComfyUI 就绪重试（Sprint 11）：ComfyUI 启动需加载模型，可能比引擎 claim 到任务慢。
+# pick_idle_host 找不到可用实例时不立即判死刑，而是「探测就绪 → 等待 → 重试」数轮，
+# 避免进程刚起的 ComfyUI 被误判为不可达而整个任务 draw_failed。
+READY_RETRIES = 12
+READY_RETRY_DELAY = 5.0  # 秒；单实例最多等待 60s 就绪
 
 _pick_lock = asyncio.Lock()
 
@@ -22,21 +29,43 @@ async def _get_queue_depth(host):
         return len(data.get("queue_running", [])) + len(data.get("queue_pending", []))
 
 
+async def _host_ready(host: str) -> bool:
+    """轻量就绪探测：GET /system_stats 可连即可（比 /queue 更早可服务）。"""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{host}/system_stats")
+            resp.raise_for_status()
+            return True
+    except Exception:
+        return False
+
+
 async def pick_idle_host():
-    candidates = []
-    for host in COMFY_HOSTS:
-        try:
-            depth = await _get_queue_depth(host)
-            candidates.append((depth, host))
-        except Exception:
-            log(f"[ComfyUI] 实例 {host} 不可达，跳过")
-            continue
-    if not candidates:
-        raise RuntimeError("所有 ComfyUI 实例均不可达")
-    candidates.sort(key=lambda x: x[0])
-    host = candidates[0][1]
-    log(f"[ComfyUI] 选择 {host}（队列深度 {candidates[0][0]}）")
-    return host
+    """选择队列最浅的可用实例。
+
+    Sprint 11 变更：无可用实例时进入「就绪等待」循环（最多 READY_RETRIES 轮，
+    每轮间隔 READY_RETRY_DELAY）。ComfyUI 冷启动加载模型需要数十秒，引擎在
+    claim 任务后 ComfyUI 可能仍在启动中；等待而非立即抛错可显著降低 draw_failed。
+    """
+    for attempt in range(READY_RETRIES):
+        candidates = []
+        for host in COMFY_HOSTS:
+            try:
+                depth = await _get_queue_depth(host)
+                candidates.append((depth, host))
+            except Exception:
+                # 不可达 → 静默收集，统一在轮末判断是否继续等待
+                continue
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            host = candidates[0][1]
+            log(f"[ComfyUI] 选择 {host}（队列深度 {candidates[0][0]}）")
+            return host
+        if attempt < READY_RETRIES - 1:
+            log(f"[ComfyUI] 所有实例尚未就绪（第 {attempt + 1}/{READY_RETRIES} 轮），"
+                f"{READY_RETRY_DELAY}s 后重试…")
+            await asyncio.sleep(READY_RETRY_DELAY)
+    raise RuntimeError("所有 ComfyUI 实例均不可达")
 
 
 def load_workflow(path, overrides: dict | None = None):

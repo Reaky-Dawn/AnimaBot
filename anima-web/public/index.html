@@ -12,64 +12,182 @@
 </head>
 <body class="page-home">
 
-  <!-- 顶部栏 -->
+  <!-- 顶部栏（无 ⓘ 按钮，Sprint 11 移除） -->
   <header class="topbar">
     <div class="topbar__inner">
       <a class="brand" href="index.html" aria-label="Anima 首页">
         <span class="brand__icon" aria-hidden="true">✦</span>
         <span class="brand__text">Anima</span>
       </a>
-      <button class="topbar__admin" type="button" aria-haspopup="dialog" aria-label="站务说明">
-        <span class="icon" aria-hidden="true">ⓘ</span>
-      </button>
     </div>
   </header>
 
   <main class="site-main">
 
-    <!-- Hero 标题区 -->
-    <section class="hero" aria-labelledby="hero-title">
-      <h1 id="hero-title" class="hero__title">把脑内的画面，<br />说给它听</h1>
-      <p class="hero__sub">输入描述，让 Anima 为你绘制二次元插画</p>
-    </section>
+    <!-- 标签栏（Sprint 11） -->
+    <nav class="tabs" aria-label="功能切换">
+      <button class="tab tab--active" data-tab="natural" type="button">自然语言生成</button>
+      <button class="tab" data-tab="tags" type="button">标签提示词</button>
+      <button class="tab" data-tab="metadata" type="button">提取元数据</button>
+      <button class="tab" data-tab="upscale" type="button">4x 放大</button>
+      <button class="tab" data-tab="examples" type="button">使用示例</button>
+    </nav>
 
-    <!-- 描述输入区 · 主卡片 -->
-    <section class="card card--primary" aria-labelledby="prompt-title">
-      <h2 id="prompt-title" class="card__title">描述你的画面</h2>
-      <div class="chips" id="example-chips" aria-label="示例提示"></div>
-      <p id="prompt-error" class="form-error" aria-live="polite"></p>
-      <form id="prompt-form" novalidate>
-        <label class="visually-hidden" for="prompt-input">画面描述</label>
-        <textarea
-          id="prompt-input"
-          class="prompt-input"
-          maxlength="500"
-          rows="5"
-          placeholder="例如：黄昏下的城市天台，少女回头微笑，风吹起发梢，暖色调……"></textarea>
-        <div class="prompt-form__row">
-          <span id="prompt-count" class="prompt-count" aria-live="polite">0 / 500</span>
-          <button id="generate-btn" class="btn btn--primary" type="submit">生成</button>
-        </div>
-      </form>
-    </section>
-
-    <!-- 参考图上传区 -->
-    <section class="card" aria-labelledby="ref-title">
-      <h2 id="ref-title" class="card__title">参考图（可选）</h2>
-      <div id="ref-uploader" class="uploader" role="button" tabindex="0" aria-label="上传参考图">
-        <span class="uploader__icon icon" aria-hidden="true">🖼</span>
-        <span class="uploader__main">点击或拖拽上传参考图</span>
-        <span class="uploader__sub">支持常见图片格式，≤5MB</span>
+    <!-- ===== Tab 1: 自然语言生成 ===== -->
+    <section class="tab-panel tab-panel--active" data-panel="natural" aria-label="自然语言生成">
+      <div class="card card--primary">
+        <h2 class="card__title">描述你的画面</h2>
+        <div class="chips" id="example-chips" aria-label="示例提示"></div>
+        <p id="prompt-error" class="form-error" aria-live="polite"></p>
+        <form id="natural-form" novalidate>
+          <label class="visually-hidden" for="natural-input">画面描述</label>
+          <textarea
+            id="natural-input"
+            class="prompt-input"
+            maxlength="500"
+            rows="5"
+            placeholder="例如：黄昏下的城市天台，少女回头微笑，风吹起发梢，暖色调……"></textarea>
+          <div class="prompt-form__row">
+            <span id="natural-count" class="prompt-count" aria-live="polite">0 / 500</span>
+            <button id="natural-btn" class="btn btn--primary" type="submit">生成</button>
+          </div>
+        </form>
       </div>
-      <p id="ref-error" class="form-error" aria-live="polite"></p>
-      <div id="ref-preview" class="uploader__preview"></div>
-      <p class="uploader__notice">不得上传未经授权的真人照片或他人作品</p>
+
+      <!-- 参考图选项框 -->
+      <div class="card">
+        <label class="checkbox-row">
+          <input type="checkbox" id="natural-ref-check" />
+          <span>使用参考图</span>
+        </label>
+        <div id="natural-ref-uploader" class="uploader" hidden role="button" tabindex="0" aria-label="上传参考图">
+          <span class="uploader__icon icon" aria-hidden="true">🖼</span>
+          <span class="uploader__main">点击或拖拽上传参考图</span>
+          <span class="uploader__sub">支持常见图片格式，≤5MB</span>
+        </div>
+        <p id="natural-ref-error" class="form-error" aria-live="polite"></p>
+        <div id="natural-ref-preview" class="uploader__preview"></div>
+      </div>
     </section>
 
-    <!-- 任务状态区（提交后出现） -->
+    <!-- ===== Tab 2: 标签提示词 ===== -->
+    <section class="tab-panel" data-panel="tags" aria-label="标签提示词">
+      <div class="card card--primary">
+        <h2 class="card__title">直接写标签提示词</h2>
+        <p class="card__hint">标签（Danbooru 风格，逗号分隔，如 <code>1girl, long_hair, @anmi</code>）</p>
+        <p id="tags-error" class="form-error" aria-live="polite"></p>
+        <form id="tags-form" novalidate>
+          <label class="visually-hidden" for="tags-input">标签提示词</label>
+          <textarea
+            id="tags-input"
+            class="prompt-input"
+            rows="3"
+            placeholder="1girl, solo, smile, looking_at_viewer, @anmi, …"></textarea>
+          <label class="visually-hidden" for="tags-natural-input">自然语言提示词（可选）</label>
+          <textarea
+            id="tags-natural-input"
+            class="prompt-input"
+            maxlength="500"
+            rows="3"
+            placeholder="自然语言提示词（可选，例如：阳光下微笑的少女）"></textarea>
+          <div class="prompt-form__row">
+            <span class="prompt-hint">直接绘制，不经 LLM 补全</span>
+            <button id="tags-btn" class="btn btn--primary" type="submit">生成</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <label class="checkbox-row">
+          <input type="checkbox" id="tags-ref-check" />
+          <span>使用参考图</span>
+        </label>
+        <div id="tags-ref-uploader" class="uploader" hidden role="button" tabindex="0" aria-label="上传参考图">
+          <span class="uploader__icon icon" aria-hidden="true">🖼</span>
+          <span class="uploader__main">点击或拖拽上传参考图</span>
+          <span class="uploader__sub">支持常见图片格式，≤5MB</span>
+        </div>
+        <p id="tags-ref-error" class="form-error" aria-live="polite"></p>
+        <div id="tags-ref-preview" class="uploader__preview"></div>
+      </div>
+    </section>
+
+    <!-- ===== Tab 3: 提取元数据 ===== -->
+    <section class="tab-panel" data-panel="metadata" aria-label="提取元数据">
+      <div class="card">
+        <h2 class="card__title">提取元数据</h2>
+        <p class="card__hint">上传一张 PNG 图片，查看其 AI 生成元数据</p>
+        <div id="meta-uploader" class="uploader" role="button" tabindex="0" aria-label="上传图片提取元数据">
+          <span class="uploader__icon icon" aria-hidden="true">🔍</span>
+          <span class="uploader__main">点击上传 PNG 图片</span>
+          <span class="uploader__sub">仅支持 PNG 格式</span>
+        </div>
+        <p id="meta-error" class="form-error" aria-live="polite"></p>
+        <div id="meta-result" class="meta-result" hidden>
+          <h3 class="meta-result__title">提取到以下元数据：</h3>
+          <pre id="meta-body" class="meta-body"></pre>
+        </div>
+        <div id="meta-empty" class="meta-empty" hidden>
+          <p class="notice__text">没有获取到元数据。该图片可能不含 AI 生成标记。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Tab 4: 4x 放大 ===== -->
+    <section class="tab-panel" data-panel="upscale" aria-label="4x 放大">
+      <div class="card">
+        <h2 class="card__title">4x 放大</h2>
+        <p class="card__hint">上传一张图片，使用 AI 模型将其放大 4 倍</p>
+        <div id="upscale-uploader" class="uploader" role="button" tabindex="0" aria-label="上传待放大图片">
+          <span class="uploader__icon icon" aria-hidden="true">🔍</span>
+          <span class="uploader__main">点击或拖拽上传待放大图片</span>
+          <span class="uploader__sub">支持常见图片格式，≤5MB</span>
+        </div>
+        <p id="upscale-error" class="form-error" aria-live="polite"></p>
+        <div id="upscale-preview" class="uploader__preview"></div>
+        <div class="prompt-form__row">
+          <button id="upscale-btn" class="btn btn--primary" type="button" disabled>开始 4x 放大</button>
+        </div>
+        <p id="upscale-status" class="form-error" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <!-- ===== Tab 5: 使用示例 ===== -->
+    <section class="tab-panel" data-panel="examples" aria-label="使用示例">
+      <div class="card">
+        <h2 class="card__title">使用示例</h2>
+        <div class="examples">
+          <div class="example">
+            <h3 class="example__title">🎨 指定画师风格</h3>
+            <p class="example__text">在描述中加上 <code>@画师名</code> 即可指定画师风格，例如：</p>
+            <pre class="example__code">@anmi 风格的少女，在阳光下微笑，手持鲜花</pre>
+            <pre class="example__code">请使用 @memeno 的画风，绘制一个穿着和服的女孩在樱花树下</pre>
+          </div>
+          <div class="example">
+            <h3 class="example__title">🖼 使用参考图</h3>
+            <p class="example__text">勾选「使用参考图」后上传图片，AI 会参考其构图与风格生成新图。</p>
+          </div>
+          <div class="example">
+            <h3 class="example__title">🏷 直接写标签</h3>
+            <p class="example__text">切换到「标签提示词」标签，可以直接写 Danbooru 风格标签：</p>
+            <pre class="example__code">1girl, long_hair, smile, @anmi, sunset, ocean, flowing_dress</pre>
+          </div>
+          <div class="example">
+            <h3 class="example__title">📝 自然语言描述</h3>
+            <p class="example__text">在「自然语言生成」标签中，直接用自然语言描述画面：</p>
+            <pre class="example__code">黄昏下的城市天台，少女回头微笑，风吹起发梢，暖色调</pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 任务状态区（提交后出现，简单提示） -->
     <section class="card status-panel" aria-labelledby="status-title" hidden>
-      <h2 id="status-title" class="visually-hidden">任务进度</h2>
-      <ol class="progress"></ol>
+      <h2 id="status-title" class="visually-hidden">任务状态</h2>
+      <div class="status-indicator">
+        <span class="status-indicator__spinner" aria-hidden="true">✦</span>
+        <p id="status-msg" class="status-indicator__text">生成中…</p>
+      </div>
       <p id="status-terminal" class="status-terminal" hidden></p>
     </section>
 
@@ -100,19 +218,10 @@
     </div>
   </footer>
 
-  <!-- Cookie 同意条（占位，Sprint 6 接入逻辑） -->
+  <!-- Cookie 同意条 -->
   <div class="cookie-bar" role="dialog" aria-label="Cookie 同意" hidden>
     <p class="cookie-bar__text">本站使用 Cookie 以提供基础服务，点击「知道了」继续。</p>
     <button class="cookie-bar__btn btn btn--primary" type="button">知道了</button>
-  </div>
-
-  <!-- 站务说明浮层（Sprint 7 接入，AC-P0-22/D5：服务端配置说明、页面无开关） -->
-  <div id="admin-note" class="admin-note" role="dialog" aria-modal="true" aria-label="站务说明" hidden>
-    <div class="admin-note__card">
-      <button class="admin-note__close" type="button" aria-label="关闭站务说明">×</button>
-      <h2 class="admin-note__title">站务说明</h2>
-      <p class="admin-note__text">NSFW 拦截为服务端配置、默认开启、页面不设开关。政治敏感内容拦截始终开启，不可关闭。</p>
-    </div>
   </div>
 
   <script type="module" src="js/runtime/home.js"></script>

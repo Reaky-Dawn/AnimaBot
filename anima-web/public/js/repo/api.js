@@ -222,11 +222,11 @@ function token() {
  * 返回 {id, taskToken, refPresign?} 或抛 ApiError(IP_BUSY)。
  * 参考图：返回 presigned PUT URL 语义（mock 返回假 URL，Sprint 3 仅存 dataUrl 在内存）。
  */
-export async function createTask(prompt, hasRefImage, ipHash) {
+export async function createTask(prompt, hasRefImage, ipHash, opts = {}) {
   if (config.api.mode === 'mock') {
-    return mockCreateTask(prompt, hasRefImage, ipHash);
+    return mockCreateTask(prompt, hasRefImage, ipHash, opts);
   }
-  return realCreateTask(prompt, hasRefImage);
+  return realCreateTask(prompt, hasRefImage, opts);
 }
 
 /**
@@ -262,7 +262,7 @@ export async function deleteTask(id, taskToken) {
 
 // ===== Mock 实现 =====
 
-function mockCreateTask(prompt, hasRefImage, ipHash) {
+function mockCreateTask(prompt, hasRefImage, ipHash, opts = {}) {
   mergeFromStorage();
   refreshActiveIps();
   // 单 IP 活跃检查（模拟服务端 409，AC-P0-11）
@@ -281,6 +281,9 @@ function mockCreateTask(prompt, hasRefImage, ipHash) {
     taskToken,
     ipHash: ipHash || 'mock-ip',
     prompt,
+    mode: opts.mode || 'natural',
+    tagsPrompt: opts.tagsPrompt || null,
+    naturalPrompt: opts.naturalPrompt || null,
     status: hasRefImage ? TASK_STATUS.REF_PENDING : TASK_STATUS.QUEUED,
     stage: stageOf(hasRefImage ? TASK_STATUS.REF_PENDING : TASK_STATUS.QUEUED),
     queuePos: 0,
@@ -452,11 +455,15 @@ export function mockAttachRefData(id, dataUrl) {
 
 // ===== 真实 API 实现（Sprint 8：同域 /api/* fetch，Worker 完整实现） =====
 
-async function realCreateTask(prompt, hasRefImage) {
+async function realCreateTask(prompt, hasRefImage, opts = {}) {
+  const body = { prompt, has_ref: hasRefImage };
+  if (opts.mode) body.mode = opts.mode;
+  if (opts.tagsPrompt != null) body.tags_prompt = opts.tagsPrompt;
+  if (opts.naturalPrompt != null) body.natural_prompt = opts.naturalPrompt;
   const res = await fetch(config.api.endpoints.createTask, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, has_ref: hasRefImage }),
+    body: JSON.stringify(body),
   });
   if (res.status === 201) return res.json();
   if (res.status === 409) {

@@ -49,9 +49,28 @@ HEALTH_REFRESH_SEC = int(os.environ.get("HEALTH_REFRESH_SEC", "300"))
 # Sprint 10：请求超时下限 600s（原值 60 → 600；若原值 >600 则不动）
 _http = httpx.AsyncClient(timeout=600)
 
+# Sprint 11：独立错误日志文件（网页只展示简要错误，完整错误明细在此落盘，便于排障）
+ERROR_LOG_PATH = Path(os.environ.get("ERROR_LOG_PATH", "/kaggle/working/engine_logs/errors.log"))
+
 # NSFW 开关缓存（读 Worker /api/health；站长改 NSFW_FILTER_ENABLED 后最多 HEALTH_REFRESH_SEC 生效）
 _nsfw_enabled = True
 _health_fetched_at = 0.0
+
+
+def write_error_log(task_id: str, action: str, message: str):
+    """把一次任务失败的完整错误明细追加到独立 error log 文件。
+
+    网页侧只对用户展示简要「卡在某一步」，而排障所需的完整报错、执行到哪一步、
+    先前步骤与阶段性结果，统一落盘到 ERROR_LOG_PATH（Kaggle /kaggle/working/engine_logs/errors.log）。
+    """
+    try:
+        ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} task={task_id} step={action} ===\n")
+            f.write(message)
+            f.write("\n")
+    except Exception as e:
+        log(f"[errorlog] 写入失败: {e}")
 
 
 # ===== Worker 通信 =====
@@ -139,17 +158,20 @@ class TaskLog:
         self.steps.append(entry)
         log(f"[task] {self.task_id} {action}" + (f": {detail}" if detail else ""))
 
-    def to_json(self) -> str:
-        return json.dumps(self.steps, ensure_ascii=False)
+    def to_json(self, indent=None) -> str:
+        return json.dumps(self.steps, ensure_ascii=False, indent=indent)
 
 
 async def process_task(task: dict):
     task_id = task["id"]
     prompt = task["prompt"]
+    mode = task.get("mode", "natural")
+    tags_prompt_user = task.get("tags_prompt")  # tags 模式用户直供标签
+    natural_prompt_user = task.get("natural_prompt")  # tags 模式用户直供自然语言
     ref_url = task.get("ref_url")
     t0 = time.time()
     tlog = TaskLog(task_id)
-    log(f"[task] {task_id} 已 claim（prompting），开始处理")
+    log(f"[task] {task_id} 已 claim（mode={mode}），开始处理")
 
     # 参考图（可选）：Worker 内端点下载（KV 版，相对路径拼 WORKER_BASE_URL）
     reference_images = []
@@ -165,63 +187,155 @@ async def process_task(task: dict):
             tlog.add("ref_download_failed", f"参考图获取失败: {e}")
 
     try:
-        # 1) 提示词参数解析（尺寸等）
-        prompt, width, height = await extract_prompt_params(prompt)
-        tlog.add("params_parsed", f"尺寸 {width}x{height}")
+        if mode == "upscale":
+            # ===== upscale 模式：4x 放大 =====
+            # 参考图即为待放大图片；直接将其作为 base64 输入 4x-upscale 工作流
+            if not ref_url:
+                raise RuntimeError("upscale 模式缺少参考图")
+            # 参考图已在上面下载到 reference_images[0]
+            if not reference_images:
+                raise RuntimeError("upscale 模式参考图下载失败")
+            img_b64 = base64.b64encode(reference_images[0]).decode("ascii")
+            tlog.add("params_parsed", "upscale 模式，加载 4x 放大工作流")
 
-        # 2) 提示词 Agent（tags_prompt / natural_prompt / description / characters）
-        tags_prompt, natural_prompt, description, characters = await agent(
-            prompt, images=reference_images
-        )
-        # 阶段性结果摘要：只记长度不记内容（tech-design 3.3.4）
-        tlog.add(
-            "prompt_generated",
-            f"提示词生成完成（tags {len(tags_prompt)} 字符 / natural {len(natural_prompt)} 字符"
-            + (f" / 角色 {len(characters)} 个" if characters else ""),
-        )
+            # NSFW 检查跳过（放大已有图，不涉及新生成内容）
+            tlog.add("nsfw_checked", "upscale 模式跳过 NSFW 检查")
 
-        # 3) NSFW 检测：对象 = 引擎输出的提示词标签 tags_prompt（非图像分类；参考图不参与）
-        if await fetch_nsfw_flag() and check_tags_nsfw(tags_prompt):
-            await patch_task(task_id, {"status": "rejected", "failure_reason": "nsfw_rejected"})
-            tlog.add("nsfw_rejected", "tags_prompt 命中 NSFW 标签")
-            return
-        tlog.add("nsfw_checked", "NSFW 检查通过")
+            await patch_task(task_id, {"status": "prompt_done", "stage": "prompt_done"})
+            tlog.add("prompt_done", "已回写 prompt_done")
 
-        await patch_task(task_id, {"status": "prompt_done", "stage": "prompt_done"})
-        tlog.add("prompt_done", "已回写 prompt_done")
+            workflow = load_workflow(
+                path=Path("workflows") / "4x-upscale.json",
+                overrides={
+                    "1": {"image_data": img_b64},
+                },
+            )
+            await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
+            tlog.add("drawing_start", "已回写 drawing，开始 4x 放大")
+            imgs = await run_workflow(workflow)
+            img_bytes = imgs[0]
+            tlog.add("drawing_done", f"4x 放大完成（{len(img_bytes)}B）")
 
-        # 4) ComfyUI 绘制
-        workflow = load_workflow(
-            path=Path("workflows") / "image_anima_base_v1.json",
-            overrides={
-                "8": {"text": tags_prompt},
-                "26": {"text": natural_prompt},
-                "7": {"width": width, "height": height},
-                "10": {"seed": 666},
-            },
-        )
-        await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
-        tlog.add("drawing_start", "已回写 drawing，开始绘制")
-        imgs = await run_workflow(workflow)
-        img_bytes = imgs[0]
-        tlog.add("drawing_done", f"绘制完成（{len(img_bytes)}B）")
+            # 放大结果不重压缩（已是原图放大），但写 AI 元数据
+            img_bytes = embed_ai_metadata(img_bytes)
+            tlog.add("postprocess_done", f"元数据写入完成（{len(img_bytes)}B）")
 
-        # 5) oxipng 无损重压缩（NFR-25）→ AI 元数据（GB 45438-2025，F17）。顺序：先压缩后写元数据。
-        img_bytes = recompress_png(img_bytes)
-        img_bytes = embed_ai_metadata(img_bytes)
-        tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
+            presign_url, result_key = await presign_result(task_id)
+            if not presign_url:
+                raise RuntimeError("presign-result 获取失败")
+            if not await upload_result(presign_url, img_bytes):
+                raise RuntimeError("结果直传 Worker 失败")
+            tlog.add("result_uploaded", "放大结果图已上传 Worker")
 
-        # 6) 结果直传 Worker（KV 版：POST 字节，Worker 写 KV）
-        presign_url, result_key = await presign_result(task_id)
-        if not presign_url:
-            raise RuntimeError("presign-result 获取失败")
-        if not await upload_result(presign_url, img_bytes):
-            raise RuntimeError("结果直传 Worker 失败")
-        tlog.add("result_uploaded", "结果图已上传 Worker")
+            await patch_task(task_id, {"status": "done", "result_key": result_key})
+            tlog.add("done", f"upscale 完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
+        elif mode == "tags":
+            # ===== tags 模式：用户直写标签提示词 + 自然语言提示词，不经 LLM 补全 =====
+            tags_prompt = tags_prompt_user or ""
+            natural_prompt = natural_prompt_user or ""
+            # 参数解析：从 prompt（用户的自然语言描述）提取尺寸等
+            prompt, width, height = await extract_prompt_params(prompt)
+            tlog.add("params_parsed", f"tags 直绘模式，尺寸 {width}x{height}")
+            tlog.add("prompt_generated",
+                     f"用户直供标签（{len(tags_prompt)} 字符）/ 自然语言（{len(natural_prompt)} 字符）")
 
-        # 7) 回写 done
-        await patch_task(task_id, {"status": "done", "result_key": result_key})
-        tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
+            # NSFW 检测：仍对 tags_prompt 做检查
+            if await fetch_nsfw_flag() and check_tags_nsfw(tags_prompt):
+                await patch_task(task_id, {"status": "rejected", "failure_reason": "nsfw_rejected"})
+                tlog.add("nsfw_rejected", "tags_prompt 命中 NSFW 标签")
+                return
+            tlog.add("nsfw_checked", "NSFW 检查通过")
+
+            await patch_task(task_id, {"status": "prompt_done", "stage": "prompt_done"})
+            tlog.add("prompt_done", "已回写 prompt_done")
+
+            workflow = load_workflow(
+                path=Path("workflows") / "image_anima_base_v1.json",
+                overrides={
+                    "8": {"text": tags_prompt},
+                    "26": {"text": natural_prompt},
+                    "7": {"width": width, "height": height},
+                    "10": {"seed": 666},
+                },
+            )
+            await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
+            tlog.add("drawing_start", "已回写 drawing，开始绘制")
+            imgs = await run_workflow(workflow)
+            img_bytes = imgs[0]
+            tlog.add("drawing_done", f"绘制完成（{len(img_bytes)}B）")
+
+            img_bytes = recompress_png(img_bytes)
+            img_bytes = embed_ai_metadata(img_bytes)
+            tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
+
+            presign_url, result_key = await presign_result(task_id)
+            if not presign_url:
+                raise RuntimeError("presign-result 获取失败")
+            if not await upload_result(presign_url, img_bytes):
+                raise RuntimeError("结果直传 Worker 失败")
+            tlog.add("result_uploaded", "结果图已上传 Worker")
+
+            await patch_task(task_id, {"status": "done", "result_key": result_key})
+            tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
+        else:
+            # ===== natural 模式（原流程）：自然语言 → LLM Agent → 绘制 =====
+            # 1) 提示词参数解析（尺寸等）
+            prompt, width, height = await extract_prompt_params(prompt)
+            tlog.add("params_parsed", f"尺寸 {width}x{height}")
+
+            # 2) 提示词 Agent（tags_prompt / natural_prompt / description / characters）
+            tags_prompt, natural_prompt, description, characters = await agent(
+                prompt, images=reference_images
+            )
+            # 阶段性结果摘要：只记长度不记内容（tech-design 3.3.4）
+            tlog.add(
+                "prompt_generated",
+                f"提示词生成完成（tags {len(tags_prompt)} 字符 / natural {len(natural_prompt)} 字符"
+                + (f" / 角色 {len(characters)} 个" if characters else ""),
+            )
+
+            # 3) NSFW 检测：对象 = 引擎输出的提示词标签 tags_prompt（非图像分类；参考图不参与）
+            if await fetch_nsfw_flag() and check_tags_nsfw(tags_prompt):
+                await patch_task(task_id, {"status": "rejected", "failure_reason": "nsfw_rejected"})
+                tlog.add("nsfw_rejected", "tags_prompt 命中 NSFW 标签")
+                return
+            tlog.add("nsfw_checked", "NSFW 检查通过")
+
+            await patch_task(task_id, {"status": "prompt_done", "stage": "prompt_done"})
+            tlog.add("prompt_done", "已回写 prompt_done")
+
+            # 4) ComfyUI 绘制
+            workflow = load_workflow(
+                path=Path("workflows") / "image_anima_base_v1.json",
+                overrides={
+                    "8": {"text": tags_prompt},
+                    "26": {"text": natural_prompt},
+                    "7": {"width": width, "height": height},
+                    "10": {"seed": 666},
+                },
+            )
+            await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
+            tlog.add("drawing_start", "已回写 drawing，开始绘制")
+            imgs = await run_workflow(workflow)
+            img_bytes = imgs[0]
+            tlog.add("drawing_done", f"绘制完成（{len(img_bytes)}B）")
+
+            # 5) oxipng 无损重压缩（NFR-25）→ AI 元数据（GB 45438-2025，F17）。顺序：先压缩后写元数据。
+            img_bytes = recompress_png(img_bytes)
+            img_bytes = embed_ai_metadata(img_bytes)
+            tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
+
+            # 6) 结果直传 Worker（KV 版：POST 字节，Worker 写 KV）
+            presign_url, result_key = await presign_result(task_id)
+            if not presign_url:
+                raise RuntimeError("presign-result 获取失败")
+            if not await upload_result(presign_url, img_bytes):
+                raise RuntimeError("结果直传 Worker 失败")
+            tlog.add("result_uploaded", "结果图已上传 Worker")
+
+            # 7) 回写 done
+            await patch_task(task_id, {"status": "done", "result_key": result_key})
+            tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -230,6 +344,8 @@ async def process_task(task: dict):
         tlog.add("failed", f"{reason}: {e}")
         payload = {"status": "failed", "failure_reason": reason, "engine_log": tlog.to_json()}
         log(f"[task] {task_id} 失败: {e}")
+        # Sprint 11：完整错误明细落盘到独立 error log（网页只展示简要错误，排障看这里）
+        write_error_log(task_id, reason, tlog.to_json(indent=2))
         await patch_task(task_id, payload)
 
 

@@ -144,17 +144,30 @@ async function createTask(request, env) {
   try { body = await request.json(); } catch { body = {}; }
   const prompt = String(body.prompt || '').trim();
   const hasRef = !!body.has_ref;
+  // Sprint 11：任务模式。natural=自然语言（默认，走 LLM Agent）；
+  // tags=直接写标签（tags_prompt+natural_prompt 用户直供，不经 LLM 补全，直绘）；
+  // upscale=4x 放大（输入图走 ref 上传，引擎用 4x 工作流）。
+  const mode = ['tags', 'upscale'].includes(body.mode) ? body.mode : 'natural';
+  const tagsPrompt = mode === 'tags' ? String(body.tags_prompt || '').trim() : null;
+  const naturalPrompt = mode === 'tags' ? String(body.natural_prompt || '').trim() : null;
 
-  // 校验：描述非空 ≤500
-  if (!prompt) {
-    return json({ error: { code: 'VALIDATION', message: '请输入描述' } }, { status: 400 });
-  }
-  if (prompt.length > 500) {
-    return json({ error: { code: 'VALIDATION', message: '描述过长' } }, { status: 400 });
+  // 校验：描述非空 ≤500（upscale 模式无描述要求；tags 模式可无自然语言，但需标签或自然语言至少其一）
+  if (mode === 'natural') {
+    if (!prompt) {
+      return json({ error: { code: 'VALIDATION', message: '请输入描述' } }, { status: 400 });
+    }
+    if (prompt.length > 500) {
+      return json({ error: { code: 'VALIDATION', message: '描述过长' } }, { status: 400 });
+    }
+  } else if (mode === 'tags') {
+    if (!tagsPrompt && !naturalPrompt) {
+      return json({ error: { code: 'VALIDATION', message: '请输入标签提示词或自然语言提示词' } }, { status: 400 });
+    }
   }
 
   // 政治敏感恒定过滤（NFR-10：不受 NSFW_FILTER_ENABLED 影响，不可关闭）
-  if (SENSITIVE_WORDS.some((w) => prompt.includes(w))) {
+  const checkText = [prompt, tagsPrompt, naturalPrompt].filter(Boolean).join(' ');
+  if (SENSITIVE_WORDS.some((w) => checkText.includes(w))) {
     return json({ error: { code: 'SENSITIVE_REJECTED', message: '内容不符合要求' } }, { status: 400 });
   }
 
@@ -172,13 +185,14 @@ async function createTask(request, env) {
   const id = crypto.randomUUID();
   const taskToken = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const now = Date.now();
+  // upscale 模式把待放大图当作参考图上传（KV 存 ref/*），引擎据此跑 4x 工作流
   const refKey = hasRef ? `${REF_KEY_PREFIX}${id}.png` : null;
 
   await env.DB.prepare(
-    `INSERT INTO tasks (id, task_token, ip_hash, prompt, ref_key, ref_ready, status, result_key, failure_reason, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tasks (id, task_token, ip_hash, prompt, mode, tags_prompt, natural_prompt, ref_key, ref_ready, status, result_key, failure_reason, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
-    id, taskToken, ipHash, prompt, refKey,
+    id, taskToken, ipHash, prompt, mode, tagsPrompt, naturalPrompt, refKey,
     hasRef ? 0 : 1,
     hasRef ? 'ref_pending' : 'queued',
     null, null, now, now
@@ -324,7 +338,14 @@ async function handleEngine(request, env, path, url) {
       refUrl = `/api/engine/ref/${next.id}`;
     }
     return json({
-      task: { id: next.id, prompt: next.prompt, ref_url: refUrl },
+      task: {
+        id: next.id,
+        prompt: next.prompt,
+        mode: next.mode || 'natural',
+        tags_prompt: next.tags_prompt || null,
+        natural_prompt: next.natural_prompt || null,
+        ref_url: refUrl,
+      },
     });
   }
 
@@ -459,6 +480,9 @@ async function ensureSchema(env) {
       task_token    TEXT NOT NULL,
       ip_hash       TEXT NOT NULL,
       prompt        TEXT NOT NULL,
+      mode          TEXT NOT NULL DEFAULT 'natural',
+      tags_prompt   TEXT,
+      natural_prompt TEXT,
       ref_key       TEXT,
       ref_ready     INTEGER NOT NULL DEFAULT 0,
       status        TEXT NOT NULL DEFAULT 'ref_pending',
@@ -475,6 +499,16 @@ async function ensureSchema(env) {
   const cols = await env.DB.prepare(`PRAGMA table_info(tasks)`).all();
   if (!cols.results.some((c) => c.name === 'engine_log')) {
     await env.DB.prepare(`ALTER TABLE tasks ADD COLUMN engine_log TEXT`).run();
+  }
+  // Sprint 11：旧库补 mode / tags_prompt / natural_prompt 列
+  if (!cols.results.some((c) => c.name === 'mode')) {
+    await env.DB.prepare(`ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'natural'`).run();
+  }
+  if (!cols.results.some((c) => c.name === 'tags_prompt')) {
+    await env.DB.prepare(`ALTER TABLE tasks ADD COLUMN tags_prompt TEXT`).run();
+  }
+  if (!cols.results.some((c) => c.name === 'natural_prompt')) {
+    await env.DB.prepare(`ALTER TABLE tasks ADD COLUMN natural_prompt TEXT`).run();
   }
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at)').run();
   await env.DB.prepare(

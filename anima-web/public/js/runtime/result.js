@@ -107,7 +107,7 @@ function initResult() {
     location.href = 'index.html';
   });
 
-  // ---- 失败重试（携带原描述 + 参考图回主页重排，AC-P0-18） ----
+  // ---- 失败重试（携带原描述 + 参考图 + 模式回主页重排，AC-P0-18） ----
   const retryBtn = document.getElementById('retry-btn');
   if (retryBtn) {
     retryBtn.addEventListener('click', () => {
@@ -119,6 +119,9 @@ function initResult() {
         prompt: meta.prompt || '',
         refDataUrl: ref ? ref.dataUrl : null,
         refMime: ref ? ref.mime : null,
+        mode: meta.mode || 'natural',
+        tagsPrompt: meta.tagsPrompt || null,
+        naturalPrompt: meta.naturalPrompt || null,
       });
       location.href = 'index.html';
     });

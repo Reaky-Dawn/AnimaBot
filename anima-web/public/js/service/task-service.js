@@ -21,16 +21,21 @@ import { TASK_STATUS, API_ERROR, stageOf, isTerminal } from '../types/task.js';
  * @param {string} params.prompt        用户描述（已校验非空 ≤500 字）
  * @param {Object|null} params.refImage 参考图数据 {dataUrl, mime, width, height} | null
  * @param {string} params.ipHash        mock 模式的 ip_hash（真实模式由 Worker 从 CF-Connecting-IP 计算，前端不传原始 IP）
+ * @param {string} [params.mode]        任务模式：natural（默认）/ tags / upscale
+ * @param {string} [params.tagsPrompt]  tags 模式直供标签提示词
+ * @param {string} [params.naturalPrompt] tags 模式直供自然语言提示词
  * @returns {Promise<{id, taskToken, status}>}
  * @throws ApiError(IP_BUSY) 当单 IP 已有进行中任务（AC-P0-11）
  */
-export async function submit({ prompt, refImage, ipHash }) {
+export async function submit({ prompt, refImage, ipHash, mode, tagsPrompt, naturalPrompt }) {
   const hasRefImage = refImage !== null && refImage !== undefined;
 
   // 1. 建任务（服务端单 IP 检查在 Worker；mock 模式在 api.js 内）
   let created;
   try {
-    created = await api.createTask(prompt, hasRefImage, ipHash);
+    created = await api.createTask(prompt, hasRefImage, ipHash, {
+      mode, tagsPrompt, naturalPrompt,
+    });
   } catch (err) {
     if (err && (err.code === API_ERROR.IP_BUSY || err.code === 'IP_BUSY')) {
       throw err; // 409：前端提示"当前已有任务进行中…"（AC-P0-11）
@@ -68,6 +73,9 @@ export async function submit({ prompt, refImage, ipHash }) {
     taskToken,
     descSummary: prompt.slice(0, 30), // 描述摘要（不含图片内容，NFR-07 精神）
     prompt,                            // 全量描述（≤500 字，重试预填 AC-P0-18 用）
+    mode: mode || 'natural',           // Sprint 11：任务模式
+    tagsPrompt: tagsPrompt || null,
+    naturalPrompt: naturalPrompt || null,
     maxStageReached: 1,
     queuePos: 0,
     hasRefImage,

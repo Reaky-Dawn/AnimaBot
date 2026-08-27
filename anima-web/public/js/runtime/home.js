@@ -1,14 +1,15 @@
 /**
- * runtime/home.js —— 主页页面生命周期
+ * runtime/home.js —— 主页页面生命周期（Sprint 11：多标签页重构）
  *
- * 依据：docs/interface-design.md 2.1（主页交互/状态设计）、docs/tech-design.md v2.0 第 2/3.4 节
- * 依赖：service（任务提交/轮询）、ui（组件）、repo（storage 刷新恢复）、types、config
- * 层级：runtime（唯一同时接触 service 与 ui 的胶水层）
+ * Sprint 11 变更：
+ *  - 顶部标签栏 5 个子页：自然语言生成 / 标签提示词 / 提取元数据 / 4x 放大 / 使用示例
+ *  - 删除 5 节点进度条「查看进程」功能（出于流量考虑）：提交后仅显示简单「生成中…」，
+ *    失败时在结果页提示简要「卡在 XX 步」；完整错误明细在 Kaggle 侧独立 error log 落盘。
+ *  - 删除右上角 ⓘ 站务说明（不对用户做 NSFW 说明）。
+ *  - 「使用参考图」改为选项框，勾选才显示上传区。
+ *  - 新增「标签提示词」子页（直写标签直绘，不经 LLM 补全）与「4x 放大」子页。
  *
- * Sprint 3 职责：提交状态机（初始 → 已提交：输入区/上传区/chips/生成/移除全部锁定变灰，
- *                无"新任务"按钮）；IP_BUSY 提示（AC-P0-11）；防连点。
- * Sprint 4 职责：提交后启动 watchTask() 轮询；5 节点进度条渲染（TaskStatusPanel）；
- *                sessionStorage 刷新恢复进度（NFR-21）；网络异常可见提示；aria-live 播报。
+ * 依赖：service（任务提交/轮询）、ui（组件）、repo（storage）、types、config
  */
 
 import { EXAMPLE_PROMPTS } from '../config/config.js';
@@ -19,118 +20,123 @@ import {
   createPromptInput,
   createExampleChips,
   createRefImageUploader,
-  createGenerateButton,
-  createTaskStatusPanel,
-  createAdminNoteDialog,
+  parsePngMetadata,
 } from '../ui/components.js';
-import { API_ERROR, TASK_STATUS, FAILURE_REASON } from '../types/task.js';
+import { API_ERROR } from '../types/task.js';
 
-const JUMP_PAUSE_MS = 1500; // 终态停留时长（对应令牌 --duration-jump-pause，Sprint 5 自动跳转）
+const JUMP_PAUSE_MS = 1500;
 
 function initHome() {
-  const promptInputEl = document.getElementById('prompt-input');
-  const promptCountEl = document.getElementById('prompt-count');
-  const promptErrorEl = document.getElementById('prompt-error');
-  const chipsEl = document.getElementById('example-chips');
-  const refUploaderEl = document.getElementById('ref-uploader');
-  const refPreviewEl = document.getElementById('ref-preview');
-  const refErrorEl = document.getElementById('ref-error');
-  const generateBtnEl = document.getElementById('generate-btn');
+  // ===== 标签栏切换 =====
+  const tabButtons = Array.from(document.querySelectorAll('.tab'));
+  const panels = Array.from(document.querySelectorAll('.tab-panel'));
+  const tabById = new Map(tabButtons.map((b) => [b.dataset.tab, b]));
+  const panelById = new Map(panels.map((p) => [p.dataset.panel, p]));
+
+  function switchTab(name) {
+    tabButtons.forEach((b) => b.classList.toggle('tab--active', b.dataset.tab === name));
+    panels.forEach((p) => p.classList.toggle('tab-panel--active', p.dataset.panel === name));
+  }
+  tabButtons.forEach((b) => {
+    b.addEventListener('click', () => switchTab(b.dataset.tab));
+  });
+
+  // ===== 共享状态：进行中任务 / 轮询 / 状态区 =====
   const statusPanelEl = document.querySelector('.status-panel');
-  const progressListEl = document.querySelector('.progress');
+  const statusMsgEl = document.getElementById('status-msg');
   const terminalEl = document.getElementById('status-terminal');
-
-  if (!promptInputEl || !generateBtnEl || !progressListEl) {
-    console.error('[anima] home init: missing required elements');
-    return;
-  }
-
-  // 阻止表单默认提交（页面刷新）：Enter 键 / submit 按钮均走前端校验与提交
-  const promptForm = document.getElementById('prompt-form');
-  if (promptForm) {
-    promptForm.addEventListener('submit', (e) => e.preventDefault());
-  }
-
-  // 模块内状态：当前参考图数据 / 当前进行中任务 / 轮询句柄 / 进度条组件
-  let refFileData = null;
-  let activeTask = null;
   let watcher = null;
-  let progressPanel = null;
+  let activeTask = null;
+  let busy = false; // 全局忙碌标志：任一标签提交后锁定全部输入，防连点
+  let upscaleHasFile = false; // upscale 子页是否已选图（按钮启用依据）
 
-  // ---- 提示词输入 ----
-  const promptInput = createPromptInput(promptInputEl, promptCountEl, (msg) => {
-    if (msg) {
-      promptErrorEl.textContent = msg;
-      promptErrorEl.style.color = 'var(--color-error)';
-    } else {
-      promptErrorEl.textContent = '';
-      promptErrorEl.style.color = '';
-    }
-  });
+  function getMockIpHash() {
+    let h = sessionStorage.getItem('anima_mock_ip_hash');
+    if (!h) { h = 'ip-' + Math.random().toString(36).slice(2, 10); sessionStorage.setItem('anima_mock_ip_hash', h); }
+    return h;
+  }
 
-  // ---- 示例 chips（点击填充 + 聚焦 + 光标置尾） ----
-  const exampleChips = createExampleChips(chipsEl, EXAMPLE_PROMPTS, (text) => {
-    promptInputEl.value = text;
-    promptInput.updateCount();
-    promptInputEl.focus();
-    promptInputEl.setSelectionRange(text.length, text.length);
-  });
+  function showStatus(msg) {
+    if (statusMsgEl) statusMsgEl.textContent = msg;
+    if (statusPanelEl) statusPanelEl.hidden = false;
+    if (terminalEl) terminalEl.hidden = true;
+  }
+  function hideStatus() {
+    if (statusPanelEl) statusPanelEl.hidden = true;
+    if (terminalEl) terminalEl.hidden = true;
+  }
+  function lockAllTabs() {
+    busy = true;
+    document.querySelectorAll('.prompt-input').forEach((t) => { t.disabled = true; });
+    document.querySelectorAll('.uploader').forEach((u) => { u.setAttribute('aria-disabled', 'true'); });
+    document.querySelectorAll('#natural-btn, #tags-btn, #upscale-btn').forEach((b) => { b.disabled = true; });
+  }
+  function unlockAllTabs() {
+    busy = false;
+    document.querySelectorAll('.prompt-input').forEach((t) => { t.disabled = false; });
+    document.querySelectorAll('.uploader').forEach((u) => { u.removeAttribute('aria-disabled'); });
+    document.querySelectorAll('#natural-btn, #tags-btn').forEach((b) => { b.disabled = false; });
+    // upscale 按钮仅在已选图时启用
+    const upBtn = document.getElementById('upscale-btn');
+    if (upBtn) upBtn.disabled = !upscaleHasFile;
+  }
 
-  // ---- 参考图上传 ----
-  const refUploader = createRefImageUploader(
-    refUploaderEl,
-    refPreviewEl,
-    refErrorEl,
-    (fileData) => {
-      refFileData = fileData; // {file, dataUrl, width, height, mime} | null
-    }
-  );
+  /**
+   * 提交后启动轮询：仅检测终态（done → 跳结果页成功；failed → 跳结果页失败）。
+   * 不做 5 节点进度展示（Sprint 11）。
+   */
+  function startWatching(taskLike) {
+    if (watcher) watcher.stop();
+    watcher = watchTask({
+      id: taskLike.id,
+      taskToken: taskLike.taskToken,
+      onDone: () => {
+        showStatus('生成完成，正在前往结果页…');
+        scheduleJump(taskLike.id);
+      },
+      onFailed: () => {
+        showStatus('生成失败，正在前往结果页…');
+        scheduleJump(taskLike.id);
+      },
+      onRejected: (t) => {
+        // rejected：提示后恢复可编辑，不跳结果页
+        const reason = t && t.failureReason;
+        showToast(reason === 'sensitive_rejected' ? '内容不符合要求' : '内容不符合站点要求', 'error');
+        unlockAllTabs();
+        hideStatus();
+      },
+      onError: (err) => {
+        if (err && err.code === API_ERROR.NOT_FOUND) {
+          showToast('任务不存在或已过期', 'error');
+        } else {
+          showToast('连接异常，正在重试…', 'error');
+        }
+      },
+    });
+  }
 
-  // ---- 生成按钮（校验 → 提交） ----
-  const generateBtn = createGenerateButton(generateBtnEl, () => {
-    // 校验（AC-P0-05/06）：先描述，后参考图（参考图在组件内即时校验）
-    const promptError = promptInput.validate();
-    if (promptError) return;
-    if (refErrorEl.textContent) return;
+  function scheduleJump(taskId) {
+    setTimeout(() => {
+      location.href = `result.html?task=${taskId}`;
+    }, JUMP_PAUSE_MS);
+  }
 
-    // ===== 提交 =====
-    runSubmit();
-  });
-
-  // ---- 提交流程 ----
-  async function runSubmit() {
-    generateBtn.lock(); // 提交瞬间禁用防连点
-
-    const prompt = promptInputEl.value.trim();
-    const refImage = refFileData
-      ? { dataUrl: refFileData.dataUrl, mime: refFileData.mime, width: refFileData.width, height: refFileData.height }
-      : null;
-
-    // mock 模式 ip_hash：会话级占位（真实模式由 Worker 从 CF-Connecting-IP 计算，前端不传原始 IP）
-    const ipHash = getMockIpHash();
-
+  async function runSubmit({ prompt, refImage, mode, tagsPrompt, naturalPrompt }) {
+    if (busy) return; // 防连点
+    showStatus('生成中…');
+    lockAllTabs();
     try {
-      const task = await submit({ prompt, refImage, ipHash });
+      const task = await submit({ prompt, refImage, ipHash: getMockIpHash(), mode, tagsPrompt, naturalPrompt });
       activeTask = task;
-
-      // 提交成功 → 清除重试意图与参考图暂存（新任务起点）
       clearRetryMeta();
       clearTaskRef();
-
-      // 提交成功 → 输入区与上传区整体锁定变灰（用户决策一/二，AC-P0-01）
-      lockInputs();
-      generateBtn.setDisabled(true); // 保持禁用（锁定态无"新任务"按钮）
-      showStatusPanel();
-
-      // Sprint 4：启动状态轮询 + 节点进度条
-      startWatching({ id: task.id, taskToken: task.taskToken }, 1, 0);
+      startWatching({ id: task.id, taskToken: task.taskToken });
     } catch (err) {
-      generateBtn.unlock(); // 失败恢复按钮（可重试）
+      unlockAllTabs();
+      hideStatus();
       if (err && (err.code === API_ERROR.SENSITIVE_REJECTED || err.code === 'SENSITIVE_REJECTED')) {
-        // 政治敏感恒定过滤（Worker POST 返回 400，NFR-10；前端仅提示，无检测逻辑）
         showToast(err.message || '内容不符合要求', 'error');
       } else if (err && (err.code === API_ERROR.IP_BUSY || err.code === 'IP_BUSY')) {
-        // AC-P0-11：单 IP 已有进行中任务
         showToast(err.message || '当前已有任务进行中，请等待其结束后再提交', 'error');
       } else {
         showToast('提交失败，请稍后再试', 'error');
@@ -139,157 +145,199 @@ function initHome() {
     }
   }
 
-  // ---- 轮询启动（Sprint 4） ----
-  /**
-   * @param {{id: string, taskToken: string}} taskLike
-   * @param {number} initialStage   初始最大节点（刷新恢复时来自 meta）
-   * @param {number} initialQueuePos 初始排队位置
-   */
-  function startWatching(taskLike, initialStage, initialQueuePos) {
-    if (watcher) watcher.stop();
+  // ===== Tab 1: 自然语言生成 =====
+  function initNatural() {
+    const inputEl = document.getElementById('natural-input');
+    const countEl = document.getElementById('natural-count');
+    const errorEl = document.getElementById('prompt-error');
+    const chipsEl = document.getElementById('example-chips');
+    const refCheck = document.getElementById('natural-ref-check');
+    const refUploaderEl = document.getElementById('natural-ref-uploader');
+    const refPreviewEl = document.getElementById('natural-ref-preview');
+    const refErrorEl = document.getElementById('natural-ref-error');
+    const btnEl = document.getElementById('natural-btn');
 
-    if (!progressPanel) {
-      progressPanel = createTaskStatusPanel(progressListEl);
-    }
-    // 先用已持久化的进度渲染（刷新恢复时立刻可见），首轮轮询会校正状态
-    progressPanel.update({
-      stage: initialStage || 1,
-      queuePos: initialQueuePos || 0,
-      status: TASK_STATUS.QUEUED,
+    let refFileData = null;
+    const promptInput = createPromptInput(inputEl, countEl, (msg) => {
+      errorEl.textContent = msg || '';
+      errorEl.style.color = msg ? 'var(--color-error)' : '';
     });
 
-    watcher = watchTask({
-      id: taskLike.id,
-      taskToken: taskLike.taskToken,
-      initialStage: initialStage || 1,
-      initialQueuePos: initialQueuePos || 0,
-      onUpdate: (t) => {
-        progressPanel.update({ stage: t.stage, queuePos: t.queuePos, status: t.status });
-      },
-      onDone: (t) => {
-        progressPanel.update({ stage: 5, queuePos: 0, status: TASK_STATUS.DONE });
-        // Sprint 5：终态展示 + 停留约 1.5s（--duration-jump-pause）后自动跳转结果页成功态（AC-P0-03）
-        showTerminal('生成完成，正在前往结果页…');
-        scheduleJump(taskLike.id);
-      },
-      onFailed: () => {
-        progressPanel.update({ stage: 5, queuePos: 0, status: TASK_STATUS.FAILED });
-        // Sprint 5：同上跳转结果页失败态（失败原因在结果页呈现，AC-P0-18）
-        showTerminal('生成失败，正在前往结果页…');
-        scheduleJump(taskLike.id);
-      },
-      onRejected: (t) => {
-        // Sprint 7：rejected 拦截分支——Toast 文案按拒绝原因（NFR-10 口径）、
-        // 输入区恢复可编辑（可修改描述重新提交）、不进入节点条、不跳转结果页（AC-P0-20 前端呈现层）
-        const reason = t && t.failureReason;
-        const copy = reason === FAILURE_REASON.SENSITIVE_REJECTED ? '内容不符合要求' : '内容不符合站点要求';
-        showToast(copy, 'error');
-        unlockInputs();
-        hideStatusPanel();
-      },
-      onError: (err) => {
-        if (err && err.code === API_ERROR.NOT_FOUND) {
-          showToast('任务不存在或已过期', 'error');
-        } else {
-          // 网络异常：不崩溃、退避重试，可见提示（Sprint 4 criterion 6）
-          showToast('连接异常，正在重试…', 'error');
-        }
-      },
+    createExampleChips(chipsEl, EXAMPLE_PROMPTS, (text) => {
+      inputEl.value = text;
+      promptInput.updateCount();
+      inputEl.focus();
+      inputEl.setSelectionRange(text.length, text.length);
+    });
+
+    const refUploader = createRefImageUploader(refUploaderEl, refPreviewEl, refErrorEl, (d) => { refFileData = d; });
+
+    refCheck.addEventListener('change', () => {
+      const on = refCheck.checked;
+      refUploaderEl.hidden = !on;
+      if (!on) { refUploader.remove(); refFileData = null; }
+    });
+
+    const genBtn = btnEl;
+    genBtn.addEventListener('click', () => {
+      const perr = promptInput.validate();
+      if (perr) return;
+      if (refErrorEl.textContent) return;
+      runSubmit({ prompt: inputEl.value.trim(), refImage: refFileData, mode: 'natural' });
+    });
+
+    document.getElementById('natural-form').addEventListener('submit', (e) => e.preventDefault());
+
+    return {
+      restoreRef(dataUrl, mime) { refCheck.checked = true; refUploaderEl.hidden = false; refUploader.restoreFromDataUrl(dataUrl, mime); },
+    };
+  }
+
+  // ===== Tab 2: 标签提示词 =====
+  function initTags() {
+    const tagsInputEl = document.getElementById('tags-input');
+    const naturalInputEl = document.getElementById('tags-natural-input');
+    const errorEl = document.getElementById('tags-error');
+    const refCheck = document.getElementById('tags-ref-check');
+    const refUploaderEl = document.getElementById('tags-ref-uploader');
+    const refPreviewEl = document.getElementById('tags-ref-preview');
+    const refErrorEl = document.getElementById('tags-ref-error');
+    const btnEl = document.getElementById('tags-btn');
+
+    let refFileData = null;
+    const refUploader = createRefImageUploader(refUploaderEl, refPreviewEl, refErrorEl, (d) => { refFileData = d; });
+
+    refCheck.addEventListener('change', () => {
+      const on = refCheck.checked;
+      refUploaderEl.hidden = !on;
+      if (!on) { refUploader.remove(); refFileData = null; }
+    });
+
+    const genBtn = btnEl;
+    genBtn.addEventListener('click', () => {
+      const tags = tagsInputEl.value.trim();
+      const natural = naturalInputEl.value.trim();
+      if (!tags && !natural) {
+        errorEl.textContent = '请输入标签提示词或自然语言提示词';
+        errorEl.style.color = 'var(--color-error)';
+        return;
+      }
+      errorEl.textContent = '';
+      if (refErrorEl.textContent) return;
+      runSubmit({ prompt: natural || tags, refImage: refFileData, mode: 'tags', tagsPrompt: tags, naturalPrompt: natural });
+    });
+
+    document.getElementById('tags-form').addEventListener('submit', (e) => e.preventDefault());
+
+    return {
+      restoreRef(dataUrl, mime) { refCheck.checked = true; refUploaderEl.hidden = false; refUploader.restoreFromDataUrl(dataUrl, mime); },
+    };
+  }
+
+  // ===== Tab 3: 提取元数据 =====
+  function initMetadata() {
+    const uploaderEl = document.getElementById('meta-uploader');
+    const errorEl = document.getElementById('meta-error');
+    const resultEl = document.getElementById('meta-result');
+    const bodyEl = document.getElementById('meta-body');
+    const emptyEl = document.getElementById('meta-empty');
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/png,.png';
+    fileInput.hidden = true;
+    uploaderEl.appendChild(fileInput);
+
+    uploaderEl.addEventListener('click', () => { if (!uploaderEl.hasAttribute('aria-disabled')) fileInput.click(); });
+    uploaderEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+
+    async function handleFile(file) {
+      if (!file) return;
+      errorEl.textContent = '';
+      resultEl.hidden = true;
+      emptyEl.hidden = true;
+      if (!/\.png$/i.test(file.name) && file.type !== 'image/png') {
+        errorEl.textContent = '仅支持 PNG 格式';
+        errorEl.style.color = 'var(--color-error)';
+        return;
+      }
+      const buf = await file.arrayBuffer();
+      const meta = parsePngMetadata(buf);
+      const entries = Object.entries(meta);
+      if (entries.length === 0) {
+        emptyEl.hidden = false;
+        return;
+      }
+      const lines = entries.map(([k, v]) => `${k}: ${v}`);
+      bodyEl.textContent = lines.join('\n');
+      resultEl.hidden = false;
+    }
+    fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+  }
+
+  // ===== Tab 4: 4x 放大 =====
+  function initUpscale() {
+    const uploaderEl = document.getElementById('upscale-uploader');
+    const errorEl = document.getElementById('upscale-error');
+    const previewEl = document.getElementById('upscale-preview');
+    const statusEl = document.getElementById('upscale-status');
+    const btnEl = document.getElementById('upscale-btn');
+
+    let upscaleFileData = null;
+    // 复用参考图上传器（压缩后 dataUrl）
+    const upUploader = createRefImageUploader(uploaderEl, previewEl, errorEl, (d) => {
+      upscaleFileData = d;
+      upscaleHasFile = !!d;
+      btnEl.disabled = !d;
+      if (!d) statusEl.textContent = '';
+    });
+
+    btnEl.addEventListener('click', () => {
+      if (!upscaleFileData) return;
+      statusEl.textContent = '放大中…';
+      statusEl.style.color = '';
+      runSubmit({ prompt: 'upscale', refImage: upscaleFileData, mode: 'upscale' });
     });
   }
 
-  // ---- 锁定输入区（用户决策二：提交后整体锁定变灰，无"新任务"按钮） ----
-  function lockInputs() {
-    promptInputEl.disabled = true;
-    refUploader.setDisabled(true);
-    exampleChips.setDisabled(true);
-    // 上传预览中的移除按钮禁用
-    refPreviewEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-  }
+  const naturalApi = initNatural();
+  const tagsApi = initTags();
+  initMetadata();
+  initUpscale();
 
-  /** 解锁输入区（Sprint 7：rejected 后恢复可编辑，AC-P0-20 交互） */
-  function unlockInputs() {
-    promptInputEl.disabled = false;
-    refUploader.setDisabled(false);
-    exampleChips.setDisabled(false);
-    refPreviewEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
-    generateBtn.unlock();
-  }
-
-  /** 隐藏状态区（Sprint 7：rejected 后不保留节点条，新提交会重新显示） */
-  function hideStatusPanel() {
-    if (statusPanelEl) statusPanelEl.hidden = true;
-    if (terminalEl) terminalEl.hidden = true;
-  }
-
-  // ---- 状态区显示（Sprint 4 填充 5 节点进度条） ----
-  function showStatusPanel() {
-    if (statusPanelEl) statusPanelEl.hidden = false;
-  }
-
-  // ---- mock ip_hash：会话内稳定（真实模式由 Worker 侧计算） ----
-  let cachedIpHash = null;
-  function getMockIpHash() {
-    if (!cachedIpHash) {
-      const stored = sessionStorage.getItem('anima_mock_ip_hash');
-      if (stored) { cachedIpHash = stored; return stored; }
-      cachedIpHash = 'ip-' + Math.random().toString(36).slice(2, 10);
-      sessionStorage.setItem('anima_mock_ip_hash', cachedIpHash);
-    }
-    return cachedIpHash;
-  }
-
-  // ---- 终态展示与自动跳转（Sprint 5，用户决策三） ----
-  function showTerminal(message) {
-    if (!terminalEl) return;
-    terminalEl.textContent = message;
-    terminalEl.hidden = false;
-    if (progressPanel) progressPanel.announce(message);
-  }
-
-  function scheduleJump(taskId) {
-    // 停留约 1.5s（--duration-jump-pause）后自动跳转结果页；无"查看结果"按钮
-    setTimeout(() => {
-      location.href = `result.html?task=${taskId}`;
-    }, JUMP_PAUSE_MS);
-  }
-
-  // ---- 刷新恢复（NFR-21）：同会话刷新后从 sessionStorage 恢复进度并继续轮询 ----
+  // ===== 刷新恢复（简化：同会话有进行中任务 → 继续轮询，仅终态跳转） =====
   function tryRestore() {
     const meta = getTaskMeta();
     if (!meta || !meta.taskId || !meta.taskToken) return;
-
     activeTask = { id: meta.taskId, taskToken: meta.taskToken };
-    lockInputs();
-    generateBtn.setDisabled(true);
-    showStatusPanel();
-    startWatching(activeTask, meta.maxStageReached || 1, meta.queuePos || 0);
+    lockAllTabs();
+    showStatus('继续生成中…');
+    startWatching(activeTask);
   }
 
-  // ---- 失败重试回填（AC-P0-18）：结果页"重试"→ 回主页预填原描述 + 参考图 ----
+  // ===== 失败重试回填（结果页"重试"→ 回主页预填） =====
   function tryRetry() {
     const retry = getRetryMeta();
     if (!retry || !retry.prompt) return;
-    promptInputEl.value = retry.prompt;
-    promptInput.updateCount();
-    if (retry.refDataUrl && refUploader.restoreFromDataUrl) {
-      refUploader.restoreFromDataUrl(retry.refDataUrl, retry.refMime || 'image/jpeg');
+    if (retry.mode === 'tags') {
+      switchTab('tags');
+      const ti = document.getElementById('tags-input');
+      if (retry.tagsPrompt) ti.value = retry.tagsPrompt;
+      const ni = document.getElementById('tags-natural-input');
+      if (retry.naturalPrompt) ni.value = retry.naturalPrompt;
+      if (retry.refDataUrl) tagsApi.restoreRef(retry.refDataUrl, retry.refMime || 'image/jpeg');
+    } else {
+      switchTab('natural');
+      const ni = document.getElementById('natural-input');
+      ni.value = retry.prompt;
+      naturalApi.restoreRef && retry.refDataUrl && naturalApi.restoreRef(retry.refDataUrl, retry.refMime || 'image/jpeg');
     }
   }
 
   tryRestore();
   tryRetry();
 
-  // ---- 合规元素（Sprint 6：Cookie 同意条 + Push 关闭） ----
+  // ===== 合规元素（Cookie 同意条 + Push 关闭） =====
   initCompliance();
-
-  // ---- 站务说明浮层（Sprint 7，AC-P0-22/D5：服务端配置说明、页面无开关） ----
-  const adminBtn = document.querySelector('.topbar__admin');
-  const adminNoteEl = document.getElementById('admin-note');
-  if (adminBtn && adminNoteEl) {
-    const adminDialog = createAdminNoteDialog(adminNoteEl);
-    adminBtn.addEventListener('click', () => adminDialog.open());
-  }
 }
 
 if (document.readyState === 'loading') {
