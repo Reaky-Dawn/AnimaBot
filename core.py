@@ -73,6 +73,43 @@ def write_error_log(task_id: str, action: str, message: str):
         log(f"[errorlog] 写入失败: {e}")
 
 
+# ===== 绘制元数据（Sprint 11：A1111 风格 parameters，只含项目实际使用的字段） =====
+
+# 工作流 image_anima_base_v1.json 的实际固定参数（节点 9/10/31/3）
+_NEGATIVE_PROMPT = ("worst quality, low quality, score_1, score_2, score_3, "
+                    "artist name, blurry, jpeg artifacts, chromatic aberration")
+_DRAW_STEPS = 30
+_DRAW_CFG = 5
+_DRAW_SAMPLER = "euler"
+_DRAW_SCHEDULER = "karras"
+_DRAW_DENOISE = 1
+_DRAW_MODEL = "anima-base-v1.0.safetensors"
+_DRAW_VAE = "qwen_image_vae.safetensors"
+_DRAW_SEED = 666  # core.py override 的固定 seed
+
+
+def build_meta_params(*, tags_prompt: str = "", natural_prompt: str = "",
+                      width: int = 0, height: int = 0,
+                      negative_prompt: str = _NEGATIVE_PROMPT,
+                      seed: int = _DRAW_SEED) -> dict:
+    """构建写入 PNG parameters 元数据的参数 dict（只含实际使用字段）。"""
+    return {
+        "tags_prompt": tags_prompt,
+        "natural_prompt": natural_prompt,
+        "negative_prompt": negative_prompt,
+        "steps": _DRAW_STEPS,
+        "sampler": _DRAW_SAMPLER,
+        "scheduler": _DRAW_SCHEDULER,
+        "cfg": _DRAW_CFG,
+        "seed": seed,
+        "width": width,
+        "height": height,
+        "model": _DRAW_MODEL,
+        "vae": _DRAW_VAE,
+        "denoise": _DRAW_DENOISE,
+    }
+
+
 # ===== Worker 通信 =====
 
 async def fetch_nsfw_flag(force=False):
@@ -279,7 +316,10 @@ async def process_task(task: dict):
             tlog.add("drawing_done", f"绘制完成（{len(img_bytes)}B）")
 
             img_bytes = recompress_png(img_bytes)
-            img_bytes = embed_ai_metadata(img_bytes)
+            img_bytes = embed_ai_metadata(img_bytes, build_meta_params(
+                tags_prompt=tags_prompt, natural_prompt=natural_prompt,
+                width=width, height=height,
+            ))
             tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
 
             presign_url, result_key = await presign_result(task_id)
@@ -336,7 +376,10 @@ async def process_task(task: dict):
 
             # 5) oxipng 无损重压缩（NFR-25）→ AI 元数据（GB 45438-2025，F17）。顺序：先压缩后写元数据。
             img_bytes = recompress_png(img_bytes)
-            img_bytes = embed_ai_metadata(img_bytes)
+            img_bytes = embed_ai_metadata(img_bytes, build_meta_params(
+                tags_prompt=tags_prompt, natural_prompt=natural_prompt,
+                width=width, height=height,
+            ))
             tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
 
             # 6) 结果直传 Worker（KV 版：POST 字节，Worker 写 KV）

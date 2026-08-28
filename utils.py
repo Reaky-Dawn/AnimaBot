@@ -118,8 +118,14 @@ def recompress_png(data: bytes) -> bytes:
 
 # ===== Sprint 8：AI 生成隐式标识（GB 45438-2025，tech-design 9.1） =====
 
-def embed_ai_metadata(data: bytes) -> bytes:
-    """用 Pillow 向 PNG 写入 AI 元数据（tEXt chunk）；JPEG 暂不支持（引擎输出为 PNG，NFR-25）。"""
+def embed_ai_metadata(data: bytes, params: dict | None = None) -> bytes:
+    """用 Pillow 向 PNG 写入 AI 元数据（tEXt/iTXt chunk）；JPEG 暂不支持（引擎输出为 PNG，NFR-25）。
+
+    params（可选）会生成 A1111 风格的 `parameters` 文本块，包含项目实际使用的绘制参数：
+    tags_prompt, natural_prompt, negative_prompt, steps, sampler, cfgs, seed, width, height, model, vae。
+
+    不存在的字段（如 Hires upscale、Lora hashes）不会添加。
+    """
     try:
         img = Image.open(io.BytesIO(data))
         if img.format == "PNG":
@@ -128,6 +134,45 @@ def embed_ai_metadata(data: bytes) -> bytes:
             pnginfo.add_text("model", "Anima")
             pnginfo.add_text("generator", "AnimaBot-web")
             pnginfo.add_text("timestamp", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+            # Sprint 11: A1111 风格 parameters 文本块（只含项目实际使用的字段）
+            if params:
+                parts = []
+                # 正面提示词：tags + natural 合并
+                if params.get("tags_prompt") or params.get("natural_prompt"):
+                    pos = ", ".join(filter(None, [params.get("tags_prompt", ""), params.get("natural_prompt", "")]))
+                    parts.append(pos)
+                # 负面提示词
+                if params.get("negative_prompt"):
+                    parts.append("Negative prompt: " + params["negative_prompt"])
+                # 参数行
+                param_items = []
+                if params.get("steps"):
+                    param_items.append("Steps: " + str(params["steps"]))
+                if params.get("sampler"):
+                    param_items.append("Sampler: " + params["sampler"])
+                if params.get("scheduler"):
+                    param_items.append("Schedule type: " + params["scheduler"])
+                if params.get("cfg"):
+                    param_items.append("CFG scale: " + str(params["cfg"]))
+                if params.get("seed"):
+                    param_items.append("Seed: " + str(params["seed"]))
+                if params.get("width") and params.get("height"):
+                    param_items.append("Size: " + str(params["width"]) + "x" + str(params["height"]))
+                if params.get("model"):
+                    param_items.append("Model: " + params["model"])
+                if params.get("vae"):
+                    param_items.append("VAE: " + params["vae"])
+                if params.get("denoise"):
+                    param_items.append("Denoising strength: " + str(params["denoise"]))
+                if param_items:
+                    parts.append(", ".join(param_items))
+                # 用 iTXt 块写入 parameters（A1111 标准块名，iTXt 支持 Unicode）
+                parameters_str = "\n".join(parts)
+                if parameters_str:
+                    pnginfo.add_text("parameters", parameters_str)
+                    log(f"[metadata] 已写入 parameters 元数据（{len(parameters_str)} 字符）")
+
             buf = io.BytesIO()
             img.save(buf, format="PNG", pnginfo=pnginfo, optimize=False)
             return buf.getvalue()
