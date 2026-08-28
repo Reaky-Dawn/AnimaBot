@@ -325,10 +325,37 @@ function initHome() {
   initMetadata();
   initUpscale();
 
-  // ===== 刷新恢复（简化：同会话有进行中任务 → 继续轮询，仅终态跳转） =====
+  // ===== 刷新恢复（回退页面/刷新时：先预检任务状态，避免终态任务仍锁定） =====
   function tryRestore() {
     const meta = getTaskMeta();
     if (!meta || !meta.taskId || !meta.taskToken) return;
+    // 用异步预检：快速查一次任务状态，如果是终态/不存在则不锁定
+    restorePrecheck(meta);
+  }
+
+  async function restorePrecheck(meta) {
+    const { getTask } = await import('../service/task-service.js');
+    const { TASK_STATUS, isTerminal } = await import('../types/task.js');
+    try {
+      const t = await getTask(meta.taskId, meta.taskToken);
+      if (isTerminal(t.status)) {
+        // 任务已完成/失败/拒绝 → 清理缓存，不锁定
+        clearTaskMeta();
+        clearTaskRef();
+        clearRetryMeta();
+        return;
+      }
+    } catch (e) {
+      // 404 或网络异常 → 任务已不存在，清理缓存不锁定
+      if (e && (e.code === 'NOT_FOUND' || e.code === 'API_ERROR.NOT_FOUND')) {
+        clearTaskMeta();
+        clearTaskRef();
+        clearRetryMeta();
+        return;
+      }
+      // 其他网络异常：静默跳过，不锁定（让用户可重新操作）
+    }
+    // 任务确实还在进行中 → 恢复轮询
     activeTask = { id: meta.taskId, taskToken: meta.taskToken };
     lockAllTabs();
     showStatus('继续生成中…');
