@@ -42,13 +42,17 @@ def _open_tags_csv():
     """以兼容方式打开 tags_enhanced.csv。
 
     该文件的中文列（cn_name/wiki）为 GBK/GB18030 编码，直接 utf-8 读取会抛
-    UnicodeDecodeError（'utf-8' codec can't decode byte ...）。先尝试 utf-8，
-    失败则回退 gb18030（GBK 超集，可解码全部中文编码）。仅需 name/nsfw 两列。
+    UnicodeDecodeError（'utf-8' codec can't decode byte ...）。由于 open()
+    的 encoding 参数是惰性解码的（读取时才抛异常），不能靠 try-open 判定编码。
+    正确做法：先读头 N 字节，尝试 utf-8 解码，失败则回退 gb18030。
     """
+    from pathlib import Path
+    raw = Path(TAGS_CSV_PATH).read_bytes()
     for enc in ("utf-8", "gb18030"):
         try:
+            raw.decode(enc)
             return open(TAGS_CSV_PATH, encoding=enc)
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, UnicodeError):
             continue
     return open(TAGS_CSV_PATH, encoding="gb18030")  # 兜底
 
