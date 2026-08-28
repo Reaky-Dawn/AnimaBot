@@ -1,7 +1,7 @@
 {
   "2": {
     "inputs": {
-      "clip_name": "qwen_3_06b_base.safetensors",
+      "clip_name": "miaomiaoHarem_anima14_txt.safetensors",
       "type": "stable_diffusion",
       "device": "default"
     },
@@ -12,7 +12,7 @@
   },
   "3": {
     "inputs": {
-      "vae_name": "qwen_image_vae.safetensors"
+      "vae_name": "qwenImage_qwenImageVAE.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
@@ -133,7 +133,7 @@
   },
   "31": {
     "inputs": {
-      "unet_name": "anima-base-v1.0.safetensors",
+      "unet_name": "miaomiaoHarem_anima12.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",

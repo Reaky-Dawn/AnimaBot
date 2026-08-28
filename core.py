@@ -83,8 +83,8 @@ _DRAW_CFG = 5
 _DRAW_SAMPLER = "euler"
 _DRAW_SCHEDULER = "karras"
 _DRAW_DENOISE = 1
-_DRAW_MODEL = "anima-base-v1.0.safetensors"
-_DRAW_VAE = "qwen_image_vae.safetensors"
+_DRAW_MODEL = "miaomiaoHarem_anima12.safetensors"
+_DRAW_VAE = "qwenImage_qwenImageVAE.safetensors"
 _DRAW_SEED = 666  # core.py override 的固定 seed
 
 
