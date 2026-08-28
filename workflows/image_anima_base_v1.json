@@ -1,7 +1,7 @@
 {
   "2": {
     "inputs": {
-      "clip_name": "miaomiaoHarem_anima12_txt.safetensors",
+      "clip_name": "qwen_3_06b_base.safetensors",
       "type": "stable_diffusion",
       "device": "default"
     },
@@ -133,16 +133,12 @@
   },
   "31": {
     "inputs": {
-      "unet_name": "miaomiaoHarem_anima12_int8convrot_00001_.safetensors",
-      "weight_dtype": "default",
-      "model_type": "anima",
-      "on_the_fly_quantization": false,
-      "enable_convrot": true,
-      "lora_mode": "Stochastic"
+      "unet_name": "anima-base-v1.0.safetensors",
+      "weight_dtype": "default"
     },
-    "class_type": "OTUNetLoaderW8A8",
+    "class_type": "UNETLoader",
     "_meta": {
-      "title": "Load Diffusion Model INT8 (W8A8)"
+      "title": "UNet加载器"
     }
   },
   "35": {
