@@ -125,10 +125,20 @@ async def presign_result(task_id: str):
 
 
 async def upload_result(upload_url: str, data: bytes):
-    """上传结果图到 Worker 端点（KV 版：POST，Worker 写 KV）。"""
+    """上传结果图到 Worker 端点（KV 版：POST，Worker 写 KV）。
+
+    注意：/api/engine/result/{id} 属于引擎接口，Worker 要求 Authorization: Bearer ENGINE_KEY。
+    必须带鉴权头，否则返回 401，导致"结果直传 Worker 失败"。
+    """
     if upload_url.startswith("/"):
         upload_url = WORKER_BASE_URL.rstrip("/") + upload_url
-    resp = await _http.post(upload_url, content=data, headers={"Content-Type": "image/png"})
+    resp = await _http.post(
+        upload_url,
+        content=data,
+        headers={"Content-Type": "image/png", "Authorization": f"Bearer {ENGINE_KEY}"},
+    )
+    if resp.status_code not in (200, 201):
+        log(f"[worker] 结果图上传失败: HTTP {resp.status_code} {resp.text[:200]}")
     return resp.status_code in (200, 201)
 
 
@@ -174,12 +184,16 @@ async def process_task(task: dict):
     log(f"[task] {task_id} 已 claim（mode={mode}），开始处理")
 
     # 参考图（可选）：Worker 内端点下载（KV 版，相对路径拼 WORKER_BASE_URL）
+    # 注意：/api/engine/ref/{id} 属引擎接口，需带 Authorization: Bearer ENGINE_KEY
     reference_images = []
     if ref_url:
         try:
             if ref_url.startswith("/"):
                 ref_url = WORKER_BASE_URL.rstrip("/") + ref_url
-            resp = await _http.get(ref_url, timeout=600)
+            resp = await _http.get(
+                ref_url, timeout=600,
+                headers={"Authorization": f"Bearer {ENGINE_KEY}"},
+            )
             resp.raise_for_status()
             reference_images = [resp.content]
             tlog.add("ref_downloaded", f"参考图已获取（{len(resp.content)}B）")
