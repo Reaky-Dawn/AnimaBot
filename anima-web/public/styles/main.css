@@ -1273,6 +1273,26 @@ body {
   box-shadow: none;
 }
 
+/* ===== Banner 广告区（Sprint 11：生成中停留页 + 结果页） ===== */
+.ad-banner-zone {
+  margin-top: 0;
+  margin-bottom: var(--space-xl);
+}
+.ad-slot--banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 250px;
+  background: var(--color-ad-card-bg);
+  border: 1.5px solid var(--color-ad-card-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.ad-slot--banner iframe {
+  display: block;
+  margin: 0 auto;
+}
+
 /* ===== 使用示例 ===== */
 .examples {
   display: flex;
