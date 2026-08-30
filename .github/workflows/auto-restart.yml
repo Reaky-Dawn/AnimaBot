@@ -15,7 +15,7 @@ jobs:
       - name: 检测引擎心跳与排队任务
         id: status
         env:
-          WORKER_BASE_URL: https://anima-web.chenzilong315.workers.dev
+          WORKER_BASE_URL: https://animadraw.cloud
           ENGINE_ID: engine-1
         run: |
           set +e
