@@ -1,0 +1,50 @@
+name: Auto-restart Kaggle engine
+
+# 自动重启引擎：当「引擎心跳超时（会话被关闭）」且「有排队任务」时才触发。
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-restart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检测引擎心跳与排队任务
+        id: status
+        env:
+          WORKER_BASE_URL: https://anima-web.chenzilong315.workers.dev
+          ENGINE_ID: engine-1
+        run: |
+          set +e
+          RESP=$(curl -sS --max-time 20 "${WORKER_BASE_URL}/api/engine/status?engine_id=${ENGINE_ID}" 2>/dev/null || echo '{"engine_alive":false,"queued_count":0}')
+          ALIVE=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_alive',False))")
+          QUEUED=$(echo "$RESP" | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('queued_count',0)))")
+          echo "alive=$ALIVE" >> "$GITHUB_OUTPUT"
+          echo "queued=$QUEUED" >> "$GITHUB_OUTPUT"
+
+      - name: 条件判断（引擎死 + 有任务 → 重启）
+        id: decide
+        run: |
+          if [ "${{ steps.status.outputs.alive }}" = "False" ] && [ "${{ steps.status.outputs.queued }}" -gt 0 ]; then
+            echo "restart=true" >> "$GITHUB_OUTPUT"
+            echo "条件满足：alive=false, queued=${{ steps.status.outputs.queued }}，执行重启"
+          else
+            echo "restart=false" >> "$GITHUB_OUTPUT"
+            echo "无需重启：alive=${{ steps.status.outputs.alive }}, queued=${{ steps.status.outputs.queued }}"
+          fi
+
+      - name: 安装 kaggle CLI
+        if: steps.decide.outputs.restart == 'true'
+        run: |
+          python3 -m pip install --quiet kaggle
+
+      - name: 推送 notebook 重启引擎
+        if: steps.decide.outputs.restart == 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          kaggle kernels push -p kaggle-notebook/
+          echo "已提交 kernels push，引擎重启中…"

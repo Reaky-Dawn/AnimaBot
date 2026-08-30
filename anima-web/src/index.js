@@ -314,6 +314,34 @@ async function delivered(request, env, id) {
 // ===== 引擎接口（ENGINE_KEY 鉴权） =====
 
 async function handleEngine(request, env, path, url) {
+  // POST /api/engine/heartbeat —— 引擎心跳上报（供外部自动重启检测）
+  // 引擎每次轮询调用；Worker 把心跳时间戳写入 KV，外部触发器据此判断引擎是否存活。
+  if (path === '/api/engine/heartbeat' && request.method === 'POST') {
+    const engineId = url.searchParams.get('engine_id') || 'engine-1';
+    await env.ANIMA_KV.put(`heartbeat/${engineId}`, String(Date.now()));
+    return json({ ok: true, ts: Date.now() });
+  }
+
+  // GET /api/engine/status —— 引擎存活 + 排队检测（供 GitHub Actions 自动重启判断）
+  // 返回：engine_alive（心跳是否在 HEARTBEAT_STALE_MS 内）、queued_count（排队任务数）。
+  // 只有「引擎已死 + 有排队任务」时外部触发器才重启，避免空转。
+  if (path === '/api/engine/status' && request.method === 'GET') {
+    const engineId = url.searchParams.get('engine_id') || 'engine-1';
+    const staleMs = Number(url.searchParams.get('stale_ms') || '180000'); // 默认 3 分钟
+    const raw = await env.ANIMA_KV.get(`heartbeat/${engineId}`);
+    const heartbeatTs = raw ? Number(raw) : 0;
+    const engineAlive = Date.now() - heartbeatTs < staleMs;
+    const queued = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM tasks WHERE status = 'queued' AND ref_ready = 1`
+    ).first();
+    return json({
+      engine_alive: engineAlive,
+      heartbeat_ts: heartbeatTs,
+      queued_count: queued ? queued.n : 0,
+      ts: Date.now(),
+    });
+  }
+
   // GET /api/engine/tasks?status=queued —— 原子 claim（queued → prompting，engine_id 记录）
   if (path === '/api/engine/tasks' && request.method === 'GET') {
     const status = url.searchParams.get('status') || 'queued';

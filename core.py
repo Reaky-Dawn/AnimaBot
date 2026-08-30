@@ -435,9 +435,20 @@ async def main():
     log("[engine] 初始状态：ComfyUI 未启动（等待首个任务冷启动）")
 
     global _last_activity
+    _hb_counter = 0
+    _hb_every = max(30, int(POLL_INTERVAL * 5))  # 每 ~10s 打一次心跳（POLL 2s）
 
     while True:
         try:
+            # ---- 心跳上报（供外部自动重启检测；失败不影响主流程） ----
+            _hb_counter += 1
+            if _hb_counter >= _hb_every / POLL_INTERVAL:
+                _hb_counter = 0
+                try:
+                    await engine_request("POST", f"/api/engine/heartbeat?engine_id={ENGINE_ID}")
+                except Exception:
+                    pass
+
             # ---- 空闲检测：任务不来时关闭 ComfyUI（释放 GPU） ----
             now = time.time()
             if not comfyui_is_sleeping() and (now - _last_activity) > IDLE_TIMEOUT_SEC:
