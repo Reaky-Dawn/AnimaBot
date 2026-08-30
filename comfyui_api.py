@@ -1,5 +1,8 @@
 import asyncio
 import json
+import os
+import sys
+import subprocess
 import time
 import base64
 import httpx
@@ -18,7 +21,91 @@ REQUEST_TIMEOUT = 600
 READY_RETRIES = 12
 READY_RETRY_DELAY = 5.0  # 秒；单实例最多等待 60s 就绪
 
+# Sprint 11.5：ComfyUI 生命周期管理（空闲休眠 / 有任务冷启动）
+# 引擎自己管理 ComfyUI：空闲时关闭（释放 GPU、零消耗），有新任务时冷启动（加载模型约 30-60s）。
+# 实例启动配置与 notebook 单元格 6 一致（CUDA_VISIBLE_DEVICES 指定 GPU，--device 参数无效已移除）。
+COMFYUI_INSTANCES = [
+    {
+        "script": "/kaggle/working/ComfyUI/main.py",
+        "cwd": "/kaggle/working/ComfyUI",
+        "args": ["--disable-cuda-malloc", "--use-sage-attention", "--disable-dynamic-vram",
+                 "--gpu-only", "--port", "8188"],
+        "env": {"CUDA_VISIBLE_DEVICES": "0"},
+    },
+    {
+        "script": "/kaggle/working/ComfyUI/main.py",
+        "cwd": "/kaggle/working/ComfyUI",
+        "args": ["--disable-cuda-malloc", "--use-sage-attention", "--disable-dynamic-vram",
+                 "--gpu-only", "--port", "8189"],
+        "env": {"CUDA_VISIBLE_DEVICES": "1"},
+    },
+]
+
 _pick_lock = asyncio.Lock()
+
+# ---- ComfyUI 进程管理状态 ----
+_comfyui_procs = []       # 当前运行的 ComfyUI 子进程列表
+_comfyui_sleeping = False  # 是否处于休眠（未启动）
+_comfyui_start_lock = asyncio.Lock()
+
+
+async def start_comfyui():
+    """冷启动所有 ComfyUI 实例，并等待就绪（最多 120s）。"""
+    global _comfyui_procs, _comfyui_sleeping
+    async with _comfyui_start_lock:
+        if not _comfyui_sleeping and _comfyui_procs:
+            return  # 已在运行
+        log("[ComfyUI] 冷启动实例…")
+        _comfyui_procs = []
+        for inst in COMFYUI_INSTANCES:
+            proc_env = dict(os.environ)
+            proc_env.update(inst["env"])
+            out = open(os.devnull, "w")
+            err = open(os.devnull, "w")
+            try:
+                p = subprocess.Popen(
+                    [sys.executable, "-u", inst["script"]] + inst["args"],
+                    cwd=inst["cwd"], env=proc_env, stdout=out, stderr=err,
+                )
+                _comfyui_procs.append(p)
+                log(f"[ComfyUI] 已启动 {inst['args'][-1]}（PID {p.pid}）")
+            except Exception as e:
+                log(f"[ComfyUI] 启动失败 {inst['args'][-1]}: {e}")
+        _comfyui_sleeping = False
+    # 等待就绪（外部循环会探测；这里简单等待若干秒）
+    for _ in range(READY_RETRIES * 2):
+        if all(await asyncio.gather(*[_host_ready(h) for h in COMFY_HOSTS])):
+            log("[ComfyUI] 全部实例就绪")
+            return
+        await asyncio.sleep(READY_RETRY_DELAY)
+    log("[ComfyUI] 就绪等待超时（部分实例可能仍不可用，交给 pick_idle_host 重试）")
+
+
+async def shutdown_comfyui():
+    """空闲休眠：停止所有 ComfyUI 实例（释放 GPU，零消耗）。"""
+    global _comfyui_procs, _comfyui_sleeping
+    async with _comfyui_start_lock:
+        for p in _comfyui_procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        # 兜底 pkill
+        subprocess.run(["pkill", "-f", "ComfyUI/main.py"], capture_output=True)
+        _comfyui_procs = []
+        _comfyui_sleeping = True
+        log("[ComfyUI] 已休眠（所有实例关闭，GPU 释放）")
+
+
+async def ensure_comfyui():
+    """有任务时调用：确保 ComfyUI 在运行（休眠则冷启动）。"""
+    if _comfyui_sleeping or not _comfyui_procs:
+        await start_comfyui()
+
+
+def comfyui_is_sleeping() -> bool:
+    """查询 ComfyUI 是否处于休眠（外部模块用函数访问，避免 import 绑定失效）。"""
+    return _comfyui_sleeping
 
 
 async def _get_queue_depth(host):
@@ -46,7 +133,9 @@ async def pick_idle_host():
     Sprint 11 变更：无可用实例时进入「就绪等待」循环（最多 READY_RETRIES 轮，
     每轮间隔 READY_RETRY_DELAY）。ComfyUI 冷启动加载模型需要数十秒，引擎在
     claim 任务后 ComfyUI 可能仍在启动中；等待而非立即抛错可显著降低 draw_failed。
+    Sprint 11.5：若实例已休眠（被空闲关闭），先冷启动再等待。
     """
+    global _comfyui_sleeping
     for attempt in range(READY_RETRIES):
         candidates = []
         for host in COMFY_HOSTS:
@@ -61,6 +150,10 @@ async def pick_idle_host():
             host = candidates[0][1]
             log(f"[ComfyUI] 选择 {host}（队列深度 {candidates[0][0]}）")
             return host
+        # 无可用实例：若处于休眠 → 冷启动
+        if _comfyui_sleeping:
+            log("[ComfyUI] 实例休眠中，触发冷启动…")
+            await start_comfyui()
         if attempt < READY_RETRIES - 1:
             log(f"[ComfyUI] 所有实例尚未就绪（第 {attempt + 1}/{READY_RETRIES} 轮），"
                 f"{READY_RETRY_DELAY}s 后重试…")

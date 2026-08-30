@@ -34,7 +34,8 @@ import time
 from pathlib import Path
 
 import httpx
-from comfyui_api import load_workflow, run_workflow
+from comfyui_api import (load_workflow, run_workflow, ensure_comfyui,
+                         shutdown_comfyui, comfyui_is_sleeping)
 from utils import log, check_tags_nsfw, recompress_png, embed_ai_metadata
 
 from AutoPrompt.agent_core import agent, extract_prompt_params
@@ -51,6 +52,10 @@ _http = httpx.AsyncClient(timeout=600)
 
 # Sprint 11：独立错误日志文件（网页只展示简要错误，完整错误明细在此落盘，便于排障）
 ERROR_LOG_PATH = Path(os.environ.get("ERROR_LOG_PATH", "/kaggle/working/engine_logs/errors.log"))
+
+# Sprint 11.5：空闲休眠阈值（无任务多久后关闭 ComfyUI 释放 GPU，秒）
+IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", "300"))
+_last_activity = time.time()  # 上次有任务活动的时刻
 
 # NSFW 开关缓存（读 Worker /api/health；站长改 NSFW_FILTER_ENABLED 后最多 HEALTH_REFRESH_SEC 生效）
 _nsfw_enabled = True
@@ -424,14 +429,28 @@ def _validate_env():
 
 async def main():
     _validate_env()
-    log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，轮询间隔 {POLL_INTERVAL}s，ENGINE_ID={ENGINE_ID}")
+    log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，轮询间隔 {POLL_INTERVAL}s，"
+        f"ENGINE_ID={ENGINE_ID}，空闲休眠阈值 {IDLE_TIMEOUT_SEC}s")
     await fetch_nsfw_flag(force=True)
+    log("[engine] 初始状态：ComfyUI 未启动（等待首个任务冷启动）")
+
+    global _last_activity
 
     while True:
         try:
+            # ---- 空闲检测：任务不来时关闭 ComfyUI（释放 GPU） ----
+            now = time.time()
+            if not comfyui_is_sleeping() and (now - _last_activity) > IDLE_TIMEOUT_SEC:
+                log(f"[engine] 空闲超过 {IDLE_TIMEOUT_SEC}s，关闭 ComfyUI 以释放 GPU")
+                await shutdown_comfyui()
+
+            # ---- 取任务 ----
             task = await claim_task()
             if task:
+                # 有任务：确保 ComfyUI 已就绪（冷启动自动触发）
+                await ensure_comfyui()
                 await process_task(task)
+                _last_activity = time.time()  # 更新活跃时间
             else:
                 await asyncio.sleep(POLL_INTERVAL)
         except asyncio.CancelledError:
