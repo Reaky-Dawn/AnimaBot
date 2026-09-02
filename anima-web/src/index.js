@@ -322,9 +322,9 @@ async function handleEngine(request, env, path, url) {
     return json({ ok: true, ts: Date.now() });
   }
 
-  // GET /api/engine/status —— 引擎存活 + 排队检测（供 GitHub Actions 自动重启判断）
-  // 返回：engine_alive（心跳是否在 HEARTBEAT_STALE_MS 内）、queued_count（排队任务数）。
-  // 只有「引擎已死 + 有排队任务」时外部触发器才重启，避免空转。
+  // GET /api/engine/status —— 引擎存活 + 排队/活跃检测（供 GitHub Actions 自动重启 + notebook 有限保活）
+  // 返回：engine_alive（心跳是否在 HEARTBEAT_STALE_MS 内）、queued_count（排队任务数）、
+  //       active_count（正在处理中的任务数）。
   if (path === '/api/engine/status' && request.method === 'GET') {
     const engineId = url.searchParams.get('engine_id') || 'engine-1';
     const staleMs = Number(url.searchParams.get('stale_ms') || '180000'); // 默认 3 分钟
@@ -334,10 +334,14 @@ async function handleEngine(request, env, path, url) {
     const queued = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM tasks WHERE status = 'queued' AND ref_ready = 1`
     ).first();
+    const active = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM tasks WHERE status IN ('prompting','prompt_done','drawing')`
+    ).first();
     return json({
       engine_alive: engineAlive,
       heartbeat_ts: heartbeatTs,
       queued_count: queued ? queued.n : 0,
+      active_count: active ? active.n : 0,
       ts: Date.now(),
     });
   }
