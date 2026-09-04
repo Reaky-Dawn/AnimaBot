@@ -347,28 +347,31 @@ async function handleEngine(request, env, path, url) {
   }
 
   // GET /api/engine/tasks?status=queued —— 原子 claim（queued → prompting，engine_id 记录）
+  // Sprint 13：单语句原子抢占（UPDATE..RETURNING）。原「SELECT 队首 → 条件 UPDATE」在并发 claim 时
+  // 多个引擎/worker 可能读到同一条队首，抢占失败方要空转重试；D1 的 UPDATE 串行执行，
+  // 单语句抢占保证每个 queued 任务只会被一个 claimer 拿到，多 worker 并发也不重复派发。
   if (path === '/api/engine/tasks' && request.method === 'GET') {
     const status = url.searchParams.get('status') || 'queued';
     if (status !== 'queued') return json({ task: null });
 
-    // 取队首（FIFO）
-    const next = await env.DB.prepare(
-      `SELECT * FROM tasks WHERE status = 'queued' AND ref_ready = 1 ORDER BY created_at ASC LIMIT 1`
-    ).first();
-    if (!next) return json({ task: null });
-
-    // 原子 claim：条件 UPDATE（被他人抢走则 changes=0）
     const engineId = url.searchParams.get('engine_id') || 'engine-1';
-    const res = await env.DB.prepare(
-      `UPDATE tasks SET status = 'prompting', engine_id = ?, updated_at = ? WHERE id = ? AND status = 'queued'`
-    ).bind(engineId, Date.now(), next.id).run();
-    if (res.meta.changes === 0) return json({ task: null });
+    const claimed = await env.DB.prepare(
+      `UPDATE tasks SET status = 'prompting', engine_id = ?, updated_at = ?
+       WHERE id = (
+         SELECT id FROM tasks
+         WHERE status = 'queued' AND ref_ready = 1
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1
+       )
+       AND status = 'queued'
+       RETURNING id, prompt, mode, tags_prompt, natural_prompt, ref_key`
+    ).bind(engineId, Date.now()).run();
+
+    if (!claimed.results || claimed.results.length === 0) return json({ task: null });
+    const next = claimed.results[0];
 
     // 有参考图：返回 Worker 内参考图读取端点（引擎带 ENGINE_KEY 访问）
-    let refUrl = null;
-    if (next.ref_key) {
-      refUrl = `/api/engine/ref/${next.id}`;
-    }
+    const refUrl = next.ref_key ? `/api/engine/ref/${next.id}` : null;
     return json({
       task: {
         id: next.id,

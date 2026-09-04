@@ -8,6 +8,6 @@
   "enable_gpu": true,
   "enable_internet": true,
   "competition_sources": [],
-  "dataset_sources": ["reagino/AnimaModel"],
+  "dataset_sources": ["reagino/animamodel"],
   "kernel_sources": []
 }

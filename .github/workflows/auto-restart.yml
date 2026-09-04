@@ -17,11 +17,23 @@ jobs:
         env:
           WORKER_BASE_URL: https://animadraw.cloud
           ENGINE_ID: engine-1
+          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}   # /api/engine/* 需要引擎鉴权；Secret 里添加 ENGINE_KEY
         run: |
           set +e
-          RESP=$(curl -sS --max-time 20 "${WORKER_BASE_URL}/api/engine/status?engine_id=${ENGINE_ID}" 2>/dev/null || echo '{"engine_alive":false,"queued_count":0}')
-          ALIVE=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_alive',False))")
-          QUEUED=$(echo "$RESP" | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('queued_count',0)))")
+          # 带鉴权头 + 浏览器式 UA（Cloudflare 会拦 Python-urllib 等明显机器人 UA）
+          RESP=$(curl -sS --max-time 20 \
+            -H "Authorization: Bearer ${ENGINE_KEY}" \
+            -A "Mozilla/5.0 (X11; Linux x86_64) AnimaBot-Status/1.0" \
+            "${WORKER_BASE_URL}/api/engine/status?engine_id=${ENGINE_ID}" 2>/dev/null || \
+            echo '{"engine_alive":false,"queued_count":0}')
+          ALIVE=$(echo "$RESP" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin).get('engine_alive', False))
+except Exception: print(False)")
+          QUEUED=$(echo "$RESP" | python3 -c "
+import sys, json
+try: print(int(json.load(sys.stdin).get('queued_count', 0)))
+except Exception: print(0)")
           echo "alive=$ALIVE" >> "$GITHUB_OUTPUT"
           echo "queued=$QUEUED" >> "$GITHUB_OUTPUT"
 

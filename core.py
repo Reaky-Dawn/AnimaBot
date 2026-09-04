@@ -16,12 +16,23 @@ Sprint 8 变更（保留）：
     → POST Worker 图片端点写 KV（KV 版：无 R2 presign；Worker egress 免费）→ 回写 done
   - 日志不打印提示词/图片内容（log 只打流程信息，tech-design 3.3.4）
 
+Sprint 13 变更（用户 2026-08-30 需求）：
+  - 多任务并发：主循环改为协程池（ENGINE_WORKERS 个 worker，默认 2 = 双 T4 实例），
+    每个 worker 独立 claim→处理；Worker 侧 claim 改为单语句原子抢占（UPDATE..RETURNING），
+    多 worker / 多引擎并发不重复派发。心跳与空闲休眠拆成独立协程；
+    空闲判定加 _active_workers 守卫，长任务（如 4x 放大）期间绝不误关 ComfyUI。
+  - NSFW 标签检测默认关闭（v1 临时需求）：_nsfw_enabled 默认 False；
+    重新启用 = Worker 环境变量 NSFW_FILTER_ENABLED 改回 "true"（引擎会自动跟随）。
+    政治敏感词过滤（Worker 恒定）不受影响。
+
 环境变量（Kaggle 部署时在 notebook 中设置）：
   WORKER_BASE_URL    Worker 地址（如 https://anima.example.com）
   ENGINE_KEY         Worker Secrets 中的引擎密钥（必须）
   ENGINE_ID          引擎实例标识（多实例扩展，默认 engine-1）
   POLL_INTERVAL      轮询间隔秒（默认 2）
   HEALTH_REFRESH_SEC 重新读取 NSFW 开关的间隔秒（默认 300）
+  ENGINE_WORKERS     并发 worker 数（默认 2，对应 ComfyUI 双实例）
+  IDLE_TIMEOUT_SEC   空闲多久关闭 ComfyUI（默认 300）
 """
 
 import os
@@ -57,8 +68,13 @@ ERROR_LOG_PATH = Path(os.environ.get("ERROR_LOG_PATH", "/kaggle/working/engine_l
 IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", "300"))
 _last_activity = time.time()  # 上次有任务活动的时刻
 
+# Sprint 13：并发 worker 数（默认 2 = ComfyUI 双实例 8188/8189 各跑一单）
+ENGINE_WORKERS = max(1, int(os.environ.get("ENGINE_WORKERS", "2")))
+
 # NSFW 开关缓存（读 Worker /api/health；站长改 NSFW_FILTER_ENABLED 后最多 HEALTH_REFRESH_SEC 生效）
-_nsfw_enabled = True
+# Sprint 13：v1 默认关闭（tags CSV 误杀率高，小范围使用暂不需要检测）；
+# Worker 侧打开 NSFW_FILTER_ENABLED 后引擎会自动跟随为 True。
+_nsfw_enabled = False
 _health_fetched_at = 0.0
 
 
@@ -118,7 +134,7 @@ def build_meta_params(*, tags_prompt: str = "", natural_prompt: str = "",
 # ===== Worker 通信 =====
 
 async def fetch_nsfw_flag(force=False):
-    """读取 Worker 的 NSFW_FILTER_ENABLED（默认 true；站长部署时可关，改记录日志）。"""
+    """读取 Worker 的 NSFW_FILTER_ENABLED（默认 false，v1 暂关检测；站长改 true 后自动跟随开启）。"""
     global _nsfw_enabled, _health_fetched_at
     now = time.time()
     if not force and (now - _health_fetched_at) < HEALTH_REFRESH_SEC:
@@ -126,7 +142,7 @@ async def fetch_nsfw_flag(force=False):
     try:
         resp = await _http.get(f"{WORKER_BASE_URL}/api/health", timeout=10)
         if resp.status_code == 200:
-            _nsfw_enabled = bool(resp.json().get("nsfwFilterEnabled", True))
+            _nsfw_enabled = bool(resp.json().get("nsfwFilterEnabled", False))
             _health_fetched_at = now
             log(f"[config] NSFW_FILTER_ENABLED = {_nsfw_enabled}")
     except Exception as e:
@@ -289,9 +305,13 @@ async def process_task(task: dict):
             # ===== tags 模式：用户直写标签提示词 + 自然语言提示词，不经 LLM 补全 =====
             tags_prompt = tags_prompt_user or ""
             natural_prompt = natural_prompt_user or ""
-            # 参数解析：从 prompt（用户的自然语言描述）提取尺寸等
-            prompt, width, height = await extract_prompt_params(prompt)
-            tlog.add("params_parsed", f"tags 直绘模式，尺寸 {width}x{height}")
+            # 参数解析：从 prompt（用户的自然语言描述）提取尺寸等；空描述直接用默认尺寸（920x1536，不浪费 LLM 调用）
+            if prompt.strip():
+                prompt, width, height = await extract_prompt_params(prompt)
+                tlog.add("params_parsed", f"tags 直绘模式，尺寸 {width}x{height}")
+            else:
+                width, height = 920, 1536
+                tlog.add("params_parsed", "tags 直绘模式，无自然语言描述，使用默认尺寸 920x1536")
             tlog.add("prompt_generated",
                      f"用户直供标签（{len(tags_prompt)} 字符）/ 自然语言（{len(natural_prompt)} 字符）")
 
@@ -350,7 +370,7 @@ async def process_task(task: dict):
             tlog.add(
                 "prompt_generated",
                 f"提示词生成完成（tags {len(tags_prompt)} 字符 / natural {len(natural_prompt)} 字符"
-                + (f" / 角色 {len(characters)} 个" if characters else ""),
+                + (f" / 角色 {len(characters)} 个）" if characters else "）"),
             )
 
             # 3) NSFW 检测：对象 = 引擎输出的提示词标签 tags_prompt（非图像分类；参考图不参与）
@@ -429,46 +449,79 @@ def _validate_env():
 
 async def main():
     _validate_env()
-    log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，轮询间隔 {POLL_INTERVAL}s，"
-        f"ENGINE_ID={ENGINE_ID}，空闲休眠阈值 {IDLE_TIMEOUT_SEC}s")
+    log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，POLL={POLL_INTERVAL}s，"
+        f"ENGINE_ID={ENGINE_ID}，并发 worker={ENGINE_WORKERS}，空闲休眠阈值 {IDLE_TIMEOUT_SEC}s")
     await fetch_nsfw_flag(force=True)
     log("[engine] 初始状态：ComfyUI 未启动（等待首个任务冷启动）")
 
-    global _last_activity
-    _hb_counter = 0
-    _hb_every = max(30, int(POLL_INTERVAL * 5))  # 每 ~10s 打一次心跳（POLL 2s）
+    # Sprint 13：三协程架构 —— worker 池（claim+处理）+ 心跳协程 + 空闲休眠协程
+    await asyncio.gather(
+        _workers_loop(),
+        _heartbeat_loop(),
+        _idle_loop(),
+    )
 
+
+# ===== Sprint 13：并发 worker 池 =====
+
+# 正在处理任务的 worker 数（空闲休眠守卫：>0 时绝不关 ComfyUI）
+_active_workers = 0
+
+
+async def _worker(n: int):
+    """单个 worker：循环 claim → 处理。Worker 侧 claim 为原子抢占，空手而归时退避等待。"""
+    global _last_activity, _active_workers
     while True:
         try:
-            # ---- 心跳上报（供外部自动重启检测；失败不影响主流程） ----
-            _hb_counter += 1
-            if _hb_counter >= _hb_every / POLL_INTERVAL:
-                _hb_counter = 0
-                try:
-                    await engine_request("POST", f"/api/engine/heartbeat?engine_id={ENGINE_ID}")
-                except Exception:
-                    pass
-
-            # ---- 空闲检测：任务不来时关闭 ComfyUI（释放 GPU） ----
-            now = time.time()
-            if not comfyui_is_sleeping() and (now - _last_activity) > IDLE_TIMEOUT_SEC:
-                log(f"[engine] 空闲超过 {IDLE_TIMEOUT_SEC}s，关闭 ComfyUI 以释放 GPU")
-                await shutdown_comfyui()
-
-            # ---- 取任务 ----
             task = await claim_task()
             if task:
-                # 有任务：确保 ComfyUI 已就绪（冷启动自动触发）
-                await ensure_comfyui()
-                await process_task(task)
-                _last_activity = time.time()  # 更新活跃时间
+                _active_workers += 1
+                _last_activity = time.time()
+                try:
+                    await ensure_comfyui()
+                    await process_task(task)
+                finally:
+                    _active_workers -= 1
+                    _last_activity = time.time()
             else:
-                await asyncio.sleep(POLL_INTERVAL)
+                # 无任务：按 worker 编号错开退避，避免多 worker 同拍打 claim
+                await asyncio.sleep(POLL_INTERVAL + n * 0.37)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log(f"[engine] 主循环异常: {e}")
+            log(f"[engine] worker-{n} 异常: {e}")
             await asyncio.sleep(POLL_INTERVAL)
+
+
+async def _workers_loop():
+    await asyncio.gather(*[_worker(i) for i in range(ENGINE_WORKERS)])
+
+
+async def _heartbeat_loop():
+    """心跳上报（每 ~30s 一次；失败不影响主流程）。"""
+    _hb_every = max(30, int(POLL_INTERVAL * 5))
+    while True:
+        try:
+            await engine_request("POST", f"/api/engine/heartbeat?engine_id={ENGINE_ID}")
+        except Exception:
+            pass
+        await asyncio.sleep(_hb_every)
+
+
+async def _idle_loop():
+    """空闲休眠协程：无任务超过 IDLE_TIMEOUT_SEC 且没有 worker 在处理时，关闭 ComfyUI 释放 GPU。"""
+    global _last_activity
+    while True:
+        await asyncio.sleep(15)
+        try:
+            now = time.time()
+            if not comfyui_is_sleeping() and _active_workers == 0 and (now - _last_activity) > IDLE_TIMEOUT_SEC:
+                log(f"[engine] 空闲超过 {IDLE_TIMEOUT_SEC}s 且无进行中任务，关闭 ComfyUI 以释放 GPU")
+                await shutdown_comfyui()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"[engine] 空闲协程异常: {e}")
 
 
 if __name__ == "__main__":
