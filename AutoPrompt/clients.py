@@ -11,6 +11,7 @@ clients.py —— LLM 客户端（Sprint 10：4 槽位 failover 版）
   - 对外暴露接口不变：client_cheap / client_quality 均有 .chat.completions.create(...)
 """
 
+import asyncio
 import json
 import os
 
@@ -18,6 +19,16 @@ from openai import AsyncOpenAI
 
 # Sprint 10：请求超时下限（秒）。所有槽位 timeout = max(配置值, 600)。
 DEFAULT_TIMEOUT = 600
+
+# Sprint 13.5：槽位内重试。首发失败后重试 3 次，间隔逐次拉长（2s→5s→10s）。
+RETRY_ATTEMPTS = 4
+RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+def _is_thinking_reject(msg: str) -> bool:
+    """识别"模型不支持关闭思考"类确定性错误（如 glm 系 code 1210）。"""
+    m = msg or ""
+    return ("1210" in m) or ("始终思考" in m) or ("不支持关闭思考" in m)
 
 
 def load_config() -> dict:
@@ -105,11 +116,23 @@ class FailoverClient:
             raise RuntimeError("config.json 未配置任何 LLM 槽位（providers）")
         model = kwargs.pop("model", None) or MODEL
         for idx, p in enumerate(PROVIDERS):
-            try:
-                client = self._client_for(idx)
-                return await client.chat.completions.create(model=model, **kwargs)
-            except Exception as e:  # 该槽位失败 → 记录并尝试下一个
-                errors.append(f"槽位{idx + 1} [{p.get('base_url')}]: {sanitize(str(e))}")
+            # Sprint 13.5：槽位内重试（首发 + 3 次，间隔 2/5/10s 递增）。
+            # 特例："模型不支持关闭思考"（code 1210 等）→ 剥掉 thinking 参数立即重试，不空等。
+            client = self._client_for(idx)
+            attempt_kwargs = dict(kwargs)
+            for attempt in range(RETRY_ATTEMPTS):
+                try:
+                    return await client.chat.completions.create(model=model, **attempt_kwargs)
+                except Exception as e:
+                    msg = str(e)
+                    errors.append(f"槽位{idx + 1} [{p.get('base_url')}]: {sanitize(msg)}")
+                    if attempt >= RETRY_ATTEMPTS - 1:
+                        break
+                    if _is_thinking_reject(msg) and "thinking" in (attempt_kwargs.get("extra_body") or {}):
+                        attempt_kwargs = dict(attempt_kwargs)
+                        attempt_kwargs["extra_body"] = {k: v for k, v in attempt_kwargs["extra_body"].items() if k != "thinking"}
+                        continue
+                    await asyncio.sleep(RETRY_DELAYS[attempt])
         raise AllProvidersFailed(errors)
 
 

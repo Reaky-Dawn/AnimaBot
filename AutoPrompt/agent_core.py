@@ -76,7 +76,8 @@ async def _classify_tags(tags: list[str]) -> dict[str, float]:
                 },
             ],
             response_format={"type": "json_object"},
-            # glm-5.3-flash 等强制思考模型拒绝 thinking:disabled（code 1210）→ 不传，走网关默认
+            # 中间调用关思考提速（qwen3.8-flash 等支持；强制思考模型被拒时由 clients 重试漏斗剥参兜底）
+            extra_body={"thinking": {"type": "disabled"}},
             temperature=0.0,
         )
     except Exception as e:
@@ -108,6 +109,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
             }
         ],
         response_format={"type": "json_object"},
+        extra_body={"thinking": {"type": "disabled"}},
         temperature=0.0,
     )
     
@@ -169,6 +171,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
             }
         ],
         response_format={"type": "json_object"},
+        extra_body={"thinking": {"type": "disabled"}},
         temperature=0.0,
     )
 
@@ -444,6 +447,7 @@ async def extract_prompt_params(text: str):
 
     response = await client_cheap.chat.completions.create(
         messages=messages,
+        extra_body={"thinking": {"type": "disabled"}},
         temperature=0.0,
     )
 
