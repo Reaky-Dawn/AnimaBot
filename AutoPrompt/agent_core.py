@@ -34,6 +34,29 @@ ARTIST_SAMPLE_TEMP = 0.85
 ARTIST_CATALOG_PATH = os.path.join(os.path.dirname(__file__), "artist.txt")
 
 
+def _extract_json(text: str) -> str:
+    """从 LLM 输出中剥出 JSON：容错 ```json 围栏（glm 系模型爱包代码块）、前后杂文。
+
+    返回最外层 {..} 或 [..] 的原文；找不到时返回去空白后的原文（让上游 json.loads
+    抛出带上下文的错误，便于排障）。"""
+    if not text:
+        return text
+    import re as _re
+    # 优先抓围栏块（```json ... ``` 或 ``` ... ```）
+    fence = _re.search(r"```(?:json)?\s*(.+?)\s*```", text, _re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    text = text.strip()
+    # 再抓最外层大括号/中括号（容掉围栏外的说明文字）
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        if start != -1:
+            end = text.rfind(closer)
+            if end > start:
+                return text[start:end + 1]
+    return text
+
+
 async def _classify_tags(tags: list[str]) -> dict[str, float]:
     """在加权采样画师前，用 LLM 对最终标签逐项分类，得到 标签 -> 权重 映射。
 
@@ -61,7 +84,7 @@ async def _classify_tags(tags: list[str]) -> dict[str, float]:
         return {}
 
     try:
-        classify_tags = json.loads(resp.choices[0].message.content)
+        classify_tags = json.loads(_extract_json(resp.choices[0].message.content))
     except json.JSONDecodeError:
         classify_tags = {}
     weights = _parse_tag_categories(classify_tags)
@@ -88,7 +111,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
         temperature=0.0,
     )
     
-    parsed_response = json.loads(resp.choices[0].message.content)
+    parsed_response = json.loads(_extract_json(resp.choices[0].message.content))
     raw_search_queries = parsed_response["results"]
 
     search_queries = []
@@ -149,7 +172,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
         temperature=0.0,
     )
 
-    parsed_selection = json.loads(selection_resp.choices[0].message.content)
+    parsed_selection = json.loads(_extract_json(selection_resp.choices[0].message.content))
     selected_tags: List[str] = parsed_selection.get("selected_tags", [])
     selected_characters = []
     for character_candidate in character_candidates:

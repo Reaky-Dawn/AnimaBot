@@ -23,7 +23,10 @@ def parse_reference_selection(
     遗漏未判定的标签一律默认保留（偏保真降级）。"""
     if isinstance(raw, str):
         try:
-            payload = json.loads(raw)
+            # 容错 ```json 围栏（glm 系模型爱包代码块）
+            import re as _re
+            fence = _re.search(r"```(?:json)?\s*(.+?)\s*```", raw, _re.DOTALL)
+            payload = json.loads(fence.group(1) if fence else raw)
         except json.JSONDecodeError:
             logger.warning("参考图选择节点输出非 JSON，将默认全部保留。")
             return _all_keep(known_by_image)
