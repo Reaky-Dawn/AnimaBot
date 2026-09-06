@@ -1,6 +1,7 @@
 name: Auto-restart Kaggle engine
 
 # 自动重启引擎：当「引擎心跳超时（会话被关闭）」且「有排队任务」时才触发。
+# 注意：run 块内所有行必须保持缩进（YAML 块标量），python 一律单行，否则解析失败。
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -17,7 +18,7 @@ jobs:
         env:
           WORKER_BASE_URL: https://animadraw.cloud
           ENGINE_ID: engine-1
-          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}   # /api/engine/* 需要引擎鉴权；Secret 里添加 ENGINE_KEY
+          ENGINE_KEY: ${{ secrets.ENGINE_KEY }}
         run: |
           set +e
           # 带鉴权头 + 浏览器式 UA（Cloudflare 会拦 Python-urllib 等明显机器人 UA）
@@ -26,16 +27,11 @@ jobs:
             -A "Mozilla/5.0 (X11; Linux x86_64) AnimaBot-Status/1.0" \
             "${WORKER_BASE_URL}/api/engine/status?engine_id=${ENGINE_ID}" 2>/dev/null || \
             echo '{"engine_alive":false,"queued_count":0}')
-          ALIVE=$(echo "$RESP" | python3 -c "
-import sys, json
-try: print(json.load(sys.stdin).get('engine_alive', False))
-except Exception: print(False)")
-          QUEUED=$(echo "$RESP" | python3 -c "
-import sys, json
-try: print(int(json.load(sys.stdin).get('queued_count', 0)))
-except Exception: print(0)")
+          ALIVE=$(echo "$RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(bool(d.get("engine_alive", False)))' 2>/dev/null || echo False)
+          QUEUED=$(echo "$RESP" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(int(d.get("queued_count", 0)))' 2>/dev/null || echo 0)
           echo "alive=$ALIVE" >> "$GITHUB_OUTPUT"
           echo "queued=$QUEUED" >> "$GITHUB_OUTPUT"
+          echo "status raw: $RESP"
 
       - name: 条件判断（引擎死 + 有任务 → 重启）
         id: decide
@@ -50,8 +46,7 @@ except Exception: print(0)")
 
       - name: 安装 kaggle CLI
         if: steps.decide.outputs.restart == 'true'
-        run: |
-          python3 -m pip install --quiet kaggle
+        run: python3 -m pip install --quiet kaggle
 
       - name: 推送 notebook 重启引擎
         if: steps.decide.outputs.restart == 'true'
