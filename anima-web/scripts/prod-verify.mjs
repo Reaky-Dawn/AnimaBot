@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const BASE = 'https://anima-web.chenzilong315.workers.dev';
-const ENGINE_KEY = 'LFP4SoGh6O1Xb5nxQzT3fItkjegwVmsaicEMWDJHCvpNduKZ';
+// 方案B：仓库零密钥。运行时通过环境变量提供：$env:ENGINE_KEY='...' 再 node scripts/prod-verify.mjs
+const ENGINE_KEY = process.env.ENGINE_KEY || '';
 const SAMPLE_IMG = readFileSync(join(process.cwd(), 'public', 'assets', 'sample-result.png'));
 const IP = '203.0.113.10';
 
