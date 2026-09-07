@@ -41,6 +41,45 @@ const REF_KEY_PREFIX = 'ref/';
 const KV_GET_RETRIES = 6;
 const KV_GET_INTERVAL_MS = 200;
 
+/** 引擎唤醒防抖：同 120s 内只 dispatch 一次（GitHub dispatch 不受 schedule 限流影响） */
+const WAKE_GUARD_MS = 120000;
+
+/**
+ * 唤醒引擎：GitHub workflow_dispatch → Actions → kaggle kernels push。
+ * 背景：GitHub 免费版 schedule cron 被严重限流（288 次/天实际只跑 3 次），
+ * 「引擎死 + 有任务」可能 5 小时无人重启；改为任务创建时主动唤醒，cron 仅兜底。
+ * 需要 repo secret GH_WAKE_TOKEN（fine-grained PAT，Actions: read/write）。
+ */
+async function dispatchEngineWake(env) {
+  const token = env.GH_WAKE_TOKEN;
+  if (!token) return; // 未配置 secret 时静默跳过（Actions cron 仍作兜底）
+  try {
+    const last = await env.ANIMA_KV.get('wake/last');
+    if (last && Date.now() - Number(last) < WAKE_GUARD_MS) return;
+    const resp = await fetch(
+      'https://api.github.com/repos/Reaky-Dawn/AnimaBot/actions/workflows/auto-restart.yml/dispatches',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'anima-web-worker',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ref: 'master' }),
+      }
+    );
+    if (resp.status === 204) {
+      await env.ANIMA_KV.put('wake/last', String(Date.now()));
+      console.log('[anima] engine wake dispatched');
+    } else {
+      console.log(`[anima] engine wake dispatch rejected: ${resp.status}`);
+    }
+  } catch (e) {
+    console.log('[anima] engine wake dispatch error:', e && e.message);
+  }
+}
+
 // ===== 入口 =====
 
 export default {
@@ -75,39 +114,55 @@ export default {
 
     // ---- 前端接口 ----
     if (path.startsWith('/api/tasks')) {
-      return handleTasks(request, env, path, url);
+      return handleTasks(request, env, path, url, ctx);
     }
 
     return new Response('Not Found', { status: 404 });
   },
 
-  /** Cron 兜底清理（tech-design 3.3：超 30 分钟悬挂任务 + KV 图片） */
+  /** Cron 兜底清理 + 兜底唤醒（悬挂任务标 failed，24h 后物理删除） */
   async scheduled(event, env, ctx) {
     await ensureSchema(env);
-    const cutoff = Date.now() - 30 * 60 * 1000;
-    // 1) 超时/悬挂任务（非终态且超 30 分钟）
+    const now = Date.now();
+    // 1) 悬挂任务（非终态且超 30 分钟）→ 标记 failed（不再静默删除；前端立即可见失败原因）
+    const cutoff = now - 30 * 60 * 1000;
     const stale = await env.DB.prepare(
       `SELECT id, ref_key, result_key FROM tasks
        WHERE created_at < ? AND status NOT IN ('done','failed','rejected')`
     ).bind(cutoff).all();
-    // 2) 终态但未交付且超 30 分钟（前端 delivered 异常时兜底）
+    for (const row of stale.results) {
+      await env.DB.prepare(
+        `UPDATE tasks SET status = 'failed', failure_reason = 'timeout', engine_log = ?, updated_at = ? WHERE id = ?`
+      ).bind(
+        JSON.stringify([{ elapsed_s: 0, action: 'expired', detail: '任务超 30 分钟未进入终态（引擎离线或会话中断），已自动过期' }]),
+        now, row.id
+      ).run();
+    }
+    // 2) 终态任务超 24 小时 → 物理删除 + 清 KV 图片（失败卡/结果页有 24h 回看窗口）
+    const purgeCutoff = now - 24 * 60 * 60 * 1000;
     const staleDone = await env.DB.prepare(
       `SELECT id, ref_key, result_key FROM tasks
        WHERE updated_at < ? AND status IN ('done','failed','rejected')`
-    ).bind(cutoff).all();
-
-    const toDelete = [...stale.results, ...staleDone.results];
+    ).bind(purgeCutoff).all();
+    const toDelete = staleDone.results;
     for (const row of toDelete) {
       await env.DB.prepare('DELETE FROM tasks WHERE id = ?').bind(row.id).run();
       await deleteStoredImages(env, row);
     }
-    console.log(`[anima] cron cleanup: ${toDelete.length} tasks deleted`);
+    console.log(`[anima] cron cleanup: ${stale.results.length} marked failed, ${toDelete.length} purged`);
+    // 3) 兜底唤醒：仍有未终态任务且引擎已死 → dispatch 重启（与创建时唤醒共用防抖）
+    const pending = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM tasks WHERE status IN ('queued','ref_pending','prompting','prompt_done','drawing')`
+    ).first();
+    if (pending && pending.n > 0) {
+      ctx.waitUntil(dispatchEngineWake(env));
+    }
   },
 };
 
 // ===== 前端接口 =====
 
-async function handleTasks(request, env, path, url) {
+async function handleTasks(request, env, path, url, ctx) {
   // POST /api/tasks —— 创建任务
   if (path === '/api/tasks' && request.method === 'POST') {
     return createTask(request, env);
@@ -120,10 +175,10 @@ async function handleTasks(request, env, path, url) {
   const action = m[2] || null;
 
   if (action === 'ref' && request.method === 'POST') {
-    return uploadRef(request, env, id);
+    return uploadRef(request, env, id, ctx);
   }
   if (action === 'ref-done' && request.method === 'POST') {
-    return refDone(request, env, id);
+    return refDone(request, env, id, ctx);
   }
   if (action === 'delivered' && request.method === 'POST') {
     return delivered(request, env, id);
@@ -203,11 +258,15 @@ async function createTask(request, env) {
     ? `/api/tasks/${id}/ref?token=${taskToken}`
     : undefined;
 
+  // 唤醒引擎（引擎死 → dispatch 重启；防抖 120s；无 GH_WAKE_TOKEN 时跳过）
+  // 带参考图的任务此刻还是 ref_pending（非 queued），Actions 会空跑——等上传完入队时再唤醒
+  if (!hasRef && ctx) ctx.waitUntil(dispatchEngineWake(env));
+
   return json({ id, task_token: taskToken, ref_upload_url: refUploadUrl }, { status: 201 });
 }
 
 /** 参考图上传（KV 版）：task_token 校验 → 写 KV → 置 queued 入队 */
-async function uploadRef(request, env, id) {
+async function uploadRef(request, env, id, ctx) {
   const token = new URL(request.url).searchParams.get('token') || '';
   const task = await getOwnedTask(env, id, token);
   if (!task) return notFound();
@@ -230,11 +289,12 @@ async function uploadRef(request, env, id) {
   await env.DB.prepare(
     `UPDATE tasks SET ref_ready = 1, status = 'queued', updated_at = ? WHERE id = ?`
   ).bind(Date.now(), id).run();
+  if (ctx) ctx.waitUntil(dispatchEngineWake(env));
   return json({ ok: true, status: 'queued' });
 }
 
 /** 确认参考图上传完成（兼容旧流程；KV 版上传端点已直接入队，此接口幂等保留） */
-async function refDone(request, env, id) {
+async function refDone(request, env, id, ctx) {
   const body = await request.json().catch(() => ({}));
   const task = await getOwnedTask(env, id, body.task_token);
   if (!task) return notFound();
@@ -244,6 +304,7 @@ async function refDone(request, env, id) {
   await env.DB.prepare(
     `UPDATE tasks SET ref_ready = 1, status = 'queued', updated_at = ? WHERE id = ?`
   ).bind(Date.now(), id).run();
+  if (ctx) ctx.waitUntil(dispatchEngineWake(env));
   return json({ ok: true, status: 'queued' });
 }
 
