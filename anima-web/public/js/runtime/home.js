@@ -381,8 +381,74 @@ function initHome() {
     }
   }
 
+  // ===== 最近作品（IndexedDB 本机画廊，1 小时内；关页也不丢） =====
+  async function renderRecentGallery() {
+    try {
+      const { listGallery } = await import('../repo/gallery-store.js');
+      const items = await listGallery();
+      const panel = document.getElementById('recent-panel');
+      const strip = document.getElementById('recent-strip');
+      if (!panel || !strip) return;
+      if (!items.length) { panel.hidden = true; return; }
+      strip.innerHTML = '';
+      const objectUrls = [];
+      for (const it of items) {
+        const url = URL.createObjectURL(it.blob);
+        objectUrls.push(url);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'recent-item';
+        btn.title = it.prompt || 'AI 生成图片';
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = it.prompt || '最近作品';
+        img.loading = 'lazy';
+        btn.appendChild(img);
+        btn.addEventListener('click', () => openRecentViewer(it, url));
+        strip.appendChild(btn);
+      }
+      panel.hidden = false;
+    } catch (e) {
+      console.warn('[anima] recent gallery render failed', e);
+    }
+  }
+
+  function openRecentViewer(item, url) {
+    let overlay = document.getElementById('recent-viewer');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'recent-viewer';
+      overlay.className = 'recent-viewer';
+      overlay.innerHTML = `
+        <div class="recent-viewer__card" role="dialog" aria-modal="true" aria-label="查看最近作品">
+          <img class="recent-viewer__img" alt="AI 生成图片">
+          <div class="recent-viewer__actions">
+            <a class="recent-viewer__download" download>下载 PNG</a>
+            <button type="button" class="recent-viewer__clear">清空历史</button>
+            <button type="button" class="recent-viewer__close">关闭</button>
+          </div>
+          <p class="recent-viewer__hint">作品仅保存在本机浏览器，1 小时内有效，不会上传</p>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.hidden = true; });
+      overlay.querySelector('.recent-viewer__close').addEventListener('click', () => { overlay.hidden = true; });
+      overlay.querySelector('.recent-viewer__clear').addEventListener('click', async () => {
+        const { clearGallery } = await import('../repo/gallery-store.js');
+        await clearGallery();
+        overlay.hidden = true;
+        renderRecentGallery();
+      });
+    }
+    overlay.querySelector('.recent-viewer__img').src = url;
+    const dl = overlay.querySelector('.recent-viewer__download');
+    dl.href = url;
+    dl.download = `anima-${item.id}.png`;
+    overlay.hidden = false;
+  }
+
   tryRestore();
   tryRetry();
+  renderRecentGallery();
 
   // ===== 合规元素（Cookie 同意条 + Push 关闭） =====
   initCompliance();

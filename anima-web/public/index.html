@@ -198,6 +198,12 @@
       <p id="status-terminal" class="status-terminal" hidden></p>
     </section>
 
+    <!-- 最近作品（本机 IndexedDB，1 小时内；关页/换标签后仍可回看） -->
+    <section class="card recent-panel" id="recent-panel" aria-labelledby="recent-title" hidden>
+      <h2 id="recent-title" class="recent-panel__title">最近作品 <span class="recent-panel__hint">仅保存在本机 · 1 小时内</span></h2>
+      <div id="recent-strip" class="recent-strip"></div>
+    </section>
+
     <!-- 生成中 Banner 广告（用户停留最久处） -->
     <section class="ads ad-banner-zone" aria-label="广告">
       <div class="ad-slot ad-slot--banner">

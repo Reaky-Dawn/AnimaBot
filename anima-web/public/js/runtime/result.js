@@ -170,6 +170,10 @@ function initResult() {
       const blob = await fetchResultBlob(t.resultUrl);
       resultBlob = blob;
       const objectUrl = URL.createObjectURL(blob);
+      // 本地画廊留底（IndexedDB，仅本机 1 小时）：即用即删后用户仍可回看/下载
+      import('../repo/gallery-store.js').then(({ saveToGallery }) =>
+        saveToGallery({ id: taskId, blob, prompt: meta.descSummary || '', mode: meta.mode || '', savedAt: Date.now() })
+      ).catch((e) => console.warn('[anima] gallery save failed', e));
       gallery.showImage({ src: objectUrl, alt: `AI 生成图片：${meta.descSummary || ''}` });
       actionBar.setEnabled(true, true);
       // 数据即用即删（AC-P0-25 / F17）：展示数据就绪后 delivered（删行 + 删 R2 对象；
