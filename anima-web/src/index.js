@@ -165,7 +165,7 @@ export default {
 async function handleTasks(request, env, path, url, ctx) {
   // POST /api/tasks —— 创建任务
   if (path === '/api/tasks' && request.method === 'POST') {
-    return createTask(request, env);
+    return createTask(request, env, ctx);
   }
 
   // /api/tasks/{id}/... 子路由
@@ -194,7 +194,7 @@ async function handleTasks(request, env, path, url, ctx) {
 }
 
 /** 创建任务：IP 哈希 + 政治敏感恒定过滤 + 单 IP 活跃检查 + 建行（参考图上传端点） */
-async function createTask(request, env) {
+async function createTask(request, env, ctx) {
   let body;
   try { body = await request.json(); } catch { body = {}; }
   const prompt = String(body.prompt || '').trim();
