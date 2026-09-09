@@ -108,8 +108,8 @@ class TestUtilsMetadata(unittest.TestCase):
         img = Image.open(io.BytesIO(data))
         p = img.info.get("parameters", "")
         self.assertIn("1girl, solo", p)
-        self.assertIn("Steps: 30", p)
-        self.assertIn("Sampler: euler", p)
+        self.assertIn("Steps: 24", p)
+        self.assertIn("Sampler: res_multistep", p)
         self.assertIn("Schedule type: karras", p)
         self.assertIn("CFG scale: 5", p)
         self.assertIn("Size: 832x1216", p)
@@ -135,7 +135,7 @@ class TestCoreMisc(unittest.TestCase):
                   "scheduler", "cfg", "seed", "width", "height", "model", "vae"):
             self.assertIn(k, p)
         self.assertEqual(p["scheduler"], "karras")   # beta57 → karras 修复保持
-        self.assertEqual(p["steps"], 30)
+        self.assertEqual(p["steps"], 24)
 
     def test_write_error_log_appends(self):
         with tempfile.TemporaryDirectory() as td:

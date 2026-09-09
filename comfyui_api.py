@@ -18,8 +18,8 @@ REQUEST_TIMEOUT = 600
 # ComfyUI 就绪重试（Sprint 11）：ComfyUI 启动需加载模型，可能比引擎 claim 到任务慢。
 # pick_idle_host 找不到可用实例时不立即判死刑，而是「探测就绪 → 等待 → 重试」数轮，
 # 避免进程刚起的 ComfyUI 被误判为不可达而整个任务 draw_failed。
-READY_RETRIES = 12
-READY_RETRY_DELAY = 5.0  # 秒；单实例最多等待 60s 就绪
+READY_RETRIES = 18
+READY_RETRY_DELAY = 5.0  # 秒；单实例最多等待 90s 就绪（冷启动加载 7B 模型实测需 60-80s）
 
 # Sprint 11.5：ComfyUI 生命周期管理（空闲休眠 / 有任务冷启动）
 # 引擎自己管理 ComfyUI：空闲时关闭（释放 GPU、零消耗），有新任务时冷启动（加载模型约 30-60s）。
@@ -48,6 +48,12 @@ _pick_lock = asyncio.Lock()
 _comfyui_procs = []       # 当前运行的 ComfyUI 子进程列表
 _comfyui_sleeping = False  # 是否处于休眠（未启动）
 _comfyui_start_lock = asyncio.Lock()
+_comfyui_started_at = 0.0  # 最近一次冷启动完成的时刻（预热判断用）
+
+
+def comfyui_just_started() -> bool:
+    """ComfyUI 冷启动后 120s 内视为「刚启动」——首个任务前应做预热绘制。"""
+    return _comfyui_started_at > 0 and (time.time() - _comfyui_started_at) < 120
 
 
 async def start_comfyui():
@@ -77,9 +83,16 @@ async def start_comfyui():
     for _ in range(READY_RETRIES * 2):
         if all(await asyncio.gather(*[_host_ready(h) for h in COMFY_HOSTS])):
             log("[ComfyUI] 全部实例就绪")
+            _mark_started()
             return
         await asyncio.sleep(READY_RETRY_DELAY)
     log("[ComfyUI] 就绪等待超时（部分实例可能仍不可用，交给 pick_idle_host 重试）")
+
+
+def _mark_started():
+    """记录冷启动完成时刻（供预热判断）；import 就地解决避免循环依赖。"""
+    global _comfyui_started_at
+    _comfyui_started_at = time.time()
 
 
 async def shutdown_comfyui():

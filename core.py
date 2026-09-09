@@ -32,7 +32,7 @@ Sprint 13 变更（用户 2026-08-30 需求）：
   POLL_INTERVAL      轮询间隔秒（默认 2）
   HEALTH_REFRESH_SEC 重新读取 NSFW 开关的间隔秒（默认 300）
   ENGINE_WORKERS     并发 worker 数（默认 2，对应 ComfyUI 双实例）
-  IDLE_TIMEOUT_SEC   空闲多久关闭 ComfyUI（默认 300）
+  IDLE_TIMEOUT_SEC   空闲多久关闭 ComfyUI（默认 1500，连续生图免冷启动）
 """
 
 import os
@@ -46,7 +46,7 @@ from pathlib import Path
 
 import httpx
 from comfyui_api import (load_workflow, run_workflow, ensure_comfyui,
-                         shutdown_comfyui, comfyui_is_sleeping)
+                         shutdown_comfyui, comfyui_is_sleeping, comfyui_just_started)
 from utils import log, check_tags_nsfw, recompress_png, embed_ai_metadata
 
 from AutoPrompt.agent_core import agent, extract_prompt_params
@@ -65,7 +65,7 @@ _http = httpx.AsyncClient(timeout=600)
 ERROR_LOG_PATH = Path(os.environ.get("ERROR_LOG_PATH", "/kaggle/working/engine_logs/errors.log"))
 
 # Sprint 11.5：空闲休眠阈值（无任务多久后关闭 ComfyUI 释放 GPU，秒）
-IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", "300"))
+IDLE_TIMEOUT_SEC = int(os.environ.get("IDLE_TIMEOUT_SEC", "1500"))
 _last_activity = time.time()  # 上次有任务活动的时刻
 
 # Sprint 13：并发 worker 数（默认 2 = ComfyUI 双实例 8188/8189 各跑一单）
@@ -99,9 +99,9 @@ def write_error_log(task_id: str, action: str, message: str):
 # 工作流 image_anima_base_v1.json 的实际固定参数（节点 9/10/31/3）
 _NEGATIVE_PROMPT = ("worst quality, low quality, score_1, score_2, score_3, "
                     "artist name, blurry, jpeg artifacts, chromatic aberration")
-_DRAW_STEPS = 30
+_DRAW_STEPS = 24
 _DRAW_CFG = 5
-_DRAW_SAMPLER = "euler"
+_DRAW_SAMPLER = "res_multistep"
 _DRAW_SCHEDULER = "karras"
 _DRAW_DENOISE = 1
 _DRAW_MODEL = "miaomiaoHarem_anima12.safetensors"
@@ -310,8 +310,8 @@ async def process_task(task: dict):
                 prompt, width, height = await extract_prompt_params(prompt)
                 tlog.add("params_parsed", f"tags 直绘模式，尺寸 {width}x{height}")
             else:
-                width, height = 920, 1536
-                tlog.add("params_parsed", "tags 直绘模式，无自然语言描述，使用默认尺寸 920x1536")
+                width, height = 768, 1152
+                tlog.add("params_parsed", "tags 直绘模式，无自然语言描述，使用默认尺寸 768x1152")
             tlog.add("prompt_generated",
                      f"用户直供标签（{len(tags_prompt)} 字符）/ 自然语言（{len(natural_prompt)} 字符）")
 
@@ -433,6 +433,41 @@ async def process_task(task: dict):
 
 # ===== 主循环 =====
 
+async def prewarm_comfyui():
+    """256x256 空绘制预热：强制 ComfyUI 把模型权重完整压入显存。
+
+    首次冷启动的模型加载（约 60-90s）被吸收在这里（空闲期 / 任务认领初期），
+    用户的真实绘制从「权重已在显存」开始。并发跑两份 → 双 GPU 各摊一份。
+    """
+    try:
+        pw = load_workflow(
+            path=Path("workflows") / "image_anima_base_v1.json",
+            overrides={
+                "8": {"text": "masterpiece, best quality"},
+                "26": {"text": ""},
+                "9": {"text": ""},
+                "7": {"width": 256, "height": 256},
+                "10": {"steps": 4, "cfg": 1, "seed": 1},
+            },
+        )
+        t0 = time.time()
+        await run_workflow(pw)
+        log(f"[engine] 预热绘制完成（{time.time() - t0:.0f}s），模型已驻留显存")
+    except Exception as e:
+        log(f"[engine] 预热失败（不阻塞主流程）: {e}")
+
+
+_last_prewarm = 0.0
+
+
+def _prewarm_if_needed():
+    """需要预热时返回协程工厂；10 分钟内已预热过则跳过（防重复空转）。"""
+    global _last_prewarm
+    if time.time() - _last_prewarm < 600:
+        return None
+    _last_prewarm = time.time()
+    return prewarm_comfyui
+
 def _validate_env():
     """启动前校验关键环境变量（Sprint 11 修复：缺配置时给出明确报错而非循环刷 Illegal header）。"""
     problems = []
@@ -452,13 +487,22 @@ async def main():
     log(f"[engine] 启动：WORKER_BASE_URL={WORKER_BASE_URL}，POLL={POLL_INTERVAL}s，"
         f"ENGINE_ID={ENGINE_ID}，并发 worker={ENGINE_WORKERS}，空闲休眠阈值 {IDLE_TIMEOUT_SEC}s")
     await fetch_nsfw_flag(force=True)
-    log("[engine] 初始状态：ComfyUI 未启动（等待首个任务冷启动）")
+    log("[engine] 启动即预热 ComfyUI（模型权重在空闲期加载，首个任务零加载等待）")
+
+    async def _boot_prewarm():
+        try:
+            await ensure_comfyui()
+            # 并发两份预热 → 双 GPU 权重同时驻留（pick_idle_host 会把两个请求分到两卡）
+            await asyncio.gather(prewarm_comfyui(), prewarm_comfyui())
+        except Exception as e:
+            log(f"[engine] 启动预热异常（不影响服务）: {e}")
 
     # Sprint 13：三协程架构 —— worker 池（claim+处理）+ 心跳协程 + 空闲休眠协程
     await asyncio.gather(
         _workers_loop(),
         _heartbeat_loop(),
         _idle_loop(),
+        _boot_prewarm(),
     )
 
 
@@ -479,6 +523,10 @@ async def _worker(n: int):
                 _last_activity = time.time()
                 try:
                     await ensure_comfyui()
+                    # 冷启动后 120s 内的首个任务先走预热，把模型加载从绘制阶段剥离
+                    pw_fn = _prewarm_if_needed() if comfyui_just_started() else None
+                    if pw_fn:
+                        await pw_fn()
                     await process_task(task)
                 finally:
                     _active_workers -= 1
