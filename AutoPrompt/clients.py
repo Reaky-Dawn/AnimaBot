@@ -31,6 +31,21 @@ def _is_thinking_reject(msg: str) -> bool:
     return ("1210" in m) or ("始终思考" in m) or ("不支持关闭思考" in m)
 
 
+def _is_deterministic_reject(msg: str) -> bool:
+    """识别确定性拒绝：换模型/换槽位才有意义，槽位内重试纯属浪费。
+
+    覆盖：内容审核 400（data_inspection_failed）、鉴权 401/403、资源 404、参数 422。
+    429（限流）与 5xx 属瞬态错误，保留槽位内重试。
+    """
+    m = msg or ""
+    return ("data_inspection_failed" in m
+            or "Error code: 400" in m
+            or "Error code: 401" in m
+            or "Error code: 403" in m
+            or "Error code: 404" in m
+            or "Error code: 422" in m)
+
+
 def load_config() -> dict:
     cfg_path = "config.json"
     if not os.path.exists(cfg_path):
@@ -117,21 +132,27 @@ class FailoverClient:
         model = kwargs.pop("model", None) or MODEL
         for idx, p in enumerate(PROVIDERS):
             # Sprint 13.5：槽位内重试（首发 + 3 次，间隔 2/5/10s 递增）。
-            # 特例："模型不支持关闭思考"（code 1210 等）→ 剥掉 thinking 参数立即重试，不空等。
+            # 特例 1："模型不支持关闭思考"（code 1210 等）→ 剥掉 thinking 参数立即重试，不空等。
+            # 特例 2（Sprint 13.6）：确定性拒绝（内容审核 400 / 鉴权 401/403 等）→ 跳过槽位内
+            #   剩余重试，立即 failover 到下一槽位（同 API 不同模型可绕开单模型的审核/能力差异）。
             client = self._client_for(idx)
+            slot_model = (p.get("model") or "").strip() or model
+            slot_label = p.get("name") or p.get("base_url") or f"slot{idx + 1}"
             attempt_kwargs = dict(kwargs)
             for attempt in range(RETRY_ATTEMPTS):
                 try:
-                    return await client.chat.completions.create(model=model, **attempt_kwargs)
+                    return await client.chat.completions.create(model=slot_model, **attempt_kwargs)
                 except Exception as e:
                     msg = str(e)
-                    errors.append(f"槽位{idx + 1} [{p.get('base_url')}]: {sanitize(msg)}")
+                    errors.append(f"槽位{idx + 1}[{slot_label}]: {sanitize(msg)}")
                     if attempt >= RETRY_ATTEMPTS - 1:
                         break
                     if _is_thinking_reject(msg) and "thinking" in (attempt_kwargs.get("extra_body") or {}):
                         attempt_kwargs = dict(attempt_kwargs)
                         attempt_kwargs["extra_body"] = {k: v for k, v in attempt_kwargs["extra_body"].items() if k != "thinking"}
                         continue
+                    if _is_deterministic_reject(msg):
+                        break
                     await asyncio.sleep(RETRY_DELAYS[attempt])
         raise AllProvidersFailed(errors)
 

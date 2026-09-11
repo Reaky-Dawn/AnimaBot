@@ -248,5 +248,133 @@ class TestConcurrentWorkers(unittest.TestCase):
         self.assertGreaterEqual(calls["n"], 2)  # 异常后继续轮询（不退出）
 
 
+class TestFailoverFunnel(unittest.TestCase):
+    """Sprint 13.6：LLM 槽位漏斗——加载真实 clients.py（stub 掉 openai 依赖）。
+
+    覆盖：确定性拒绝（内容审核 400）立即跳槽、槽位级 model 覆盖（同 API 兜底模型）、
+    瞬态错误槽位内重试、全部失败聚合报错、thinking 剥参特例。
+    """
+
+    def setUp(self):
+        import importlib.util
+        if "openai" not in sys.modules:
+            _openai_stub = types.ModuleType("openai")
+            _openai_stub.AsyncOpenAI = type("AsyncOpenAI", (), {})
+            sys.modules["openai"] = _openai_stub
+        spec = importlib.util.spec_from_file_location(
+            "anima_clients_test", ROOT / "AutoPrompt" / "clients.py")
+        self.cl = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.cl)
+        self.cl.RETRY_DELAYS = (0.0, 0.0, 0.0)  # 测试不真睡
+
+    def _install(self, providers, script):
+        """providers: 槽位列表；script: 按调用顺序弹出（Exception 抛出，其余为返回值）。"""
+        calls, state = [], {"n": 0}
+
+        class _FakeChain:
+            def __init__(self, base_url):
+                self._base = base_url
+
+            async def create(self, **kw):
+                calls.append((self._base, kw.get("model")))
+                i = state["n"]
+                state["n"] += 1
+                r = script[i] if i < len(script) else script[-1]
+                if isinstance(r, Exception):
+                    raise r
+                return r
+
+        class _FakeClient:
+            def __init__(self, base_url=None, api_key=None, timeout=None):
+                self._base = base_url
+                self.chat = self
+                self.completions = self
+
+            def create(self, **kw):  # 占位，实际走 __getattr__ 链上层
+                raise NotImplementedError
+
+        def _factory(**kw):
+            c = _FakeClient(base_url=kw.get("base_url"))
+            c.chat = type("C", (), {"completions": type("CC", (), {"create": _FakeChain.create})(
+                _FakeChain.__new__(_FakeChain))})()
+            return c
+
+        # 简化：直接把 base_url 绑进闭包
+        def _factory2(**kw):
+            base = kw.get("base_url")
+            chain = _FakeChain(base)
+            client = types.SimpleNamespace(
+                chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=chain.create)))
+            return client
+
+        self.cl.AsyncOpenAI = _factory2
+        self.cl.PROVIDERS = providers
+        return calls
+
+    def test_moderation_400_fails_over_to_fallback_model(self):
+        providers = [
+            {"api_key": "k", "base_url": "https://u1", "model": "qwen3.8-flash", "name": "primary-qwen3.8-flash"},
+            {"api_key": "k", "base_url": "https://u1", "model": "glm-5.3-flash", "name": "fallback-glm-5.3-flash"},
+        ]
+        calls = self._install(providers, [
+            Exception("Error code: 400 - {'error': {'message': 'Input text data may contain inappropriate content.', 'type': 'data_inspection_failed'}}"),
+            "ok",
+        ])
+        result = asyncio.run(self.cl.FailoverClient().chat.completions.create(prompt="x"))
+        self.assertEqual(result, "ok")
+        # 主槽 1 次即跳（确定性拒绝不空等 3 次重试），兜底槽用 glm 模型
+        self.assertEqual(calls, [("https://u1", "qwen3.8-flash"), ("https://u1", "glm-5.3-flash")])
+
+    def test_transient_500_retries_same_slot(self):
+        providers = [{"api_key": "k", "base_url": "https://u1", "model": "qwen3.8-flash", "name": "primary"}]
+        calls = self._install(providers, [Exception("Error code: 500 - internal"), "ok"])
+        result = asyncio.run(self.cl.FailoverClient().chat.completions.create(prompt="x"))
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls, [("https://u1", "qwen3.8-flash"), ("https://u1", "qwen3.8-flash")])
+
+    def test_all_failed_aggregates_slot_labels(self):
+        providers = [
+            {"api_key": "k", "base_url": "https://u1", "model": "qwen3.8-flash", "name": "primary-qwen3.8-flash"},
+            {"api_key": "k", "base_url": "https://u1", "model": "glm-5.3-flash", "name": "fallback-glm-5.3-flash"},
+        ]
+        self._install(providers, [Exception("Error code: 400 - data_inspection_failed")])
+        with self.assertRaises(self.cl.AllProvidersFailed) as ctx:
+            asyncio.run(self.cl.FailoverClient().chat.completions.create(prompt="x"))
+        msg = str(ctx.exception)
+        self.assertIn("primary-qwen3.8-flash", msg)
+        self.assertIn("fallback-glm-5.3-flash", msg)
+        self.assertNotIn("sk-", msg)  # api_key 脱敏
+
+    def test_thinking_reject_strips_param_in_slot(self):
+        providers = [{"api_key": "k", "base_url": "https://u1", "model": "glm-5.3-flash", "name": "primary-glm"}]
+        calls = self._install(providers, [
+            Exception("Error code: 1210 - 该模型始终思考，不支持关闭思考"),
+            "ok",
+        ])
+        captured = {}
+
+        async def run():
+            fc = self.cl.FailoverClient()
+            orig = fc._client_for
+
+            def spy(idx):
+                c = orig(idx)
+                # 包装一层记录 extra_body
+                inner = c.chat.completions.create
+
+                async def create(**kw):
+                    captured["extra_body"] = kw.get("extra_body")
+                    return await inner(**kw)
+                c.chat.completions.create = create
+                return c
+            fc._client_for = spy
+            return await fc.chat.completions.create(prompt="x", extra_body={"thinking": {"type": "disabled"}})
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls, [("https://u1", "glm-5.3-flash"), ("https://u1", "glm-5.3-flash")])
+        self.assertNotIn("thinking", captured.get("extra_body") or {})  # 第二次调用已剥掉 thinking
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
