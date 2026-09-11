@@ -1426,3 +1426,12 @@ body {
   color: var(--color-text-secondary, #888);
   margin: 0;
 }
+
+/* ===== hidden 属性兜底 =====
+   作者样式里的 display 规则（.gallery__placeholder / .gallery__img / .uploader 等）
+   优先级高于浏览器对 [hidden] 的默认 display:none，导致 JS 用 el.hidden 切换失效。
+   症状：结果页出图后「✦ 图片加载中…」占位符仍挂在图片旁边（图标错位）。
+   此规则恢复 hidden 属性的语义：带 hidden 的元素一律不显示。 */
+[hidden] {
+  display: none !important;
+}

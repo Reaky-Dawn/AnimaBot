@@ -99,9 +99,9 @@ def write_error_log(task_id: str, action: str, message: str):
 # 工作流 image_anima_base_v1.json 的实际固定参数（节点 9/10/31/3）
 _NEGATIVE_PROMPT = ("worst quality, low quality, score_1, score_2, score_3, "
                     "artist name, blurry, jpeg artifacts, chromatic aberration")
-_DRAW_STEPS = 24
+_DRAW_STEPS = 30
 _DRAW_CFG = 5
-_DRAW_SAMPLER = "res_multistep"
+_DRAW_SAMPLER = "euler"
 _DRAW_SCHEDULER = "karras"
 _DRAW_DENOISE = 1
 _DRAW_MODEL = "miaomiaoHarem_anima12.safetensors"
@@ -310,8 +310,8 @@ async def process_task(task: dict):
                 prompt, width, height = await extract_prompt_params(prompt)
                 tlog.add("params_parsed", f"tags 直绘模式，尺寸 {width}x{height}")
             else:
-                width, height = 768, 1152
-                tlog.add("params_parsed", "tags 直绘模式，无自然语言描述，使用默认尺寸 768x1152")
+                width, height = 920, 1536
+                tlog.add("params_parsed", "tags 直绘模式，无自然语言描述，使用默认尺寸 920x1536")
             tlog.add("prompt_generated",
                      f"用户直供标签（{len(tags_prompt)} 字符）/ 自然语言（{len(natural_prompt)} 字符）")
 
