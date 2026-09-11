@@ -41,6 +41,7 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 import asyncio
 import base64
 import json
+import random
 import time
 from pathlib import Path
 
@@ -106,7 +107,12 @@ _DRAW_SCHEDULER = "karras"
 _DRAW_DENOISE = 1
 _DRAW_MODEL = "miaomiaoHarem_anima12.safetensors"
 _DRAW_VAE = "qwenImage_qwenImageVAE.safetensors"
-_DRAW_SEED = 666  # core.py override 的固定 seed
+_DRAW_SEED = 666  # 元数据默认值（实际绘制种子为每单随机，见 _new_seed）
+
+
+def _new_seed() -> int:
+    """每单随机种子（用户 2026-09-10 拍板）：打破固定 666 导致的构图/亮度相关性与图片同质化。"""
+    return random.randrange(0, 2 ** 48)
 
 
 def build_meta_params(*, tags_prompt: str = "", natural_prompt: str = "",
@@ -239,6 +245,8 @@ async def process_task(task: dict):
     ref_url = task.get("ref_url")
     t0 = time.time()
     tlog = TaskLog(task_id)
+    seed = _new_seed()  # 本单绘制种子（工作流与 PNG 元数据共用，保证记录一致）
+    tlog.add("seed", f"随机种子 {seed}")
     log(f"[task] {task_id} 已 claim（mode={mode}），开始处理")
 
     # 参考图（可选）：Worker 内端点下载（KV 版，相对路径拼 WORKER_BASE_URL）
@@ -331,7 +339,7 @@ async def process_task(task: dict):
                     "8": {"text": tags_prompt},
                     "26": {"text": natural_prompt},
                     "7": {"width": width, "height": height},
-                    "10": {"seed": 666},
+                    "10": {"seed": seed},
                 },
             )
             await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
@@ -343,7 +351,7 @@ async def process_task(task: dict):
             img_bytes = recompress_png(img_bytes)
             img_bytes = embed_ai_metadata(img_bytes, build_meta_params(
                 tags_prompt=tags_prompt, natural_prompt=natural_prompt,
-                width=width, height=height,
+                width=width, height=height, seed=seed,
             ))
             tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
 
@@ -390,7 +398,7 @@ async def process_task(task: dict):
                     "8": {"text": tags_prompt},
                     "26": {"text": natural_prompt},
                     "7": {"width": width, "height": height},
-                    "10": {"seed": 666},
+                    "10": {"seed": seed},
                 },
             )
             await patch_task(task_id, {"status": "drawing", "stage": "drawing"})
@@ -403,7 +411,7 @@ async def process_task(task: dict):
             img_bytes = recompress_png(img_bytes)
             img_bytes = embed_ai_metadata(img_bytes, build_meta_params(
                 tags_prompt=tags_prompt, natural_prompt=natural_prompt,
-                width=width, height=height,
+                width=width, height=height, seed=seed,
             ))
             tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
 
