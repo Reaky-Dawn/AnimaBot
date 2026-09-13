@@ -58,10 +58,10 @@ export const config = {
     ipBusyMessage: '当前已有任务进行中，请等待其结束后再提交',
   },
 
-  // ===== 广告（已接入 HillTopAds 真实代码，Sprint 11） =====
+  // ===== 广告（Sprint 16：已全部下线；无任何第三方脚本/跟踪） =====
   ads: {
-    enabled: true,           // 已上线：Popunder + In-Page Push + Banner（代码内联在 HTML）
-    mode: 'live',            // 'placeholder' | 'live'（HillTopAds Mainstream 类目）
+    enabled: false,          // HillTopAds 三件套已移除（用户 2026-09-13 拍板）；恢复时改 true 并重新注入代码
+    mode: 'off',             // 'off' | 'placeholder' | 'live'
   },
 
   // ===== NSFW 拦截（前端只读展示，服务端配置，AC-P0-22） =====
