@@ -551,83 +551,6 @@ body {
   display: none;
 }
 
-/* ===== Ads ===== */
-.ads {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-lg);
-  margin-bottom: var(--space-xl);
-}
-
-.ad-slot {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-sm);
-  padding: var(--space-md);
-  border-radius: var(--radius-md);
-  min-height: var(--btn-min-height);
-}
-
-.ad-slot--popunder {
-  background: var(--color-ad-card-bg);
-  border: 1.5px solid var(--color-ad-card-border);
-}
-
-.ad-slot--push {
-  background: var(--color-push-bg);
-  border: 1px solid var(--border-divider);
-  box-shadow: var(--shadow-raised);
-}
-
-.ad-slot__label {
-  position: absolute;
-  top: var(--space-sm);
-  left: var(--space-sm);
-  padding: 2px var(--space-xs); /* 2px 细内边距（标签紧凑排版；令牌最小间距 --space-xs=4px 略大，属标签专用值） */
-  background: var(--color-ad-label-bg);
-  color: var(--color-ad-label-text);
-  font-size: var(--font-size-tag);
-  font-weight: var(--font-weight-semibold);
-  border-radius: var(--radius-xs);
-  line-height: var(--line-height-title);
-}
-
-.ad-slot__text {
-  font-size: var(--font-size-caption);
-  color: var(--color-push-text);
-  text-align: center;
-}
-
-.ad-slot__hint {
-  font-size: var(--font-size-tag);
-  color: var(--text-tertiary);
-}
-
-.ad-slot__close {
-  position: absolute;
-  top: var(--space-sm);
-  right: var(--space-sm);
-  width: var(--touch-target);
-  height: var(--touch-target);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  font-size: var(--icon-size-md);
-  color: var(--color-push-close);
-  cursor: pointer;
-  border-radius: var(--radius-full);
-}
-
-.ad-slot__close:focus-visible {
-  outline: 2px solid var(--color-focus-ring);
-  outline-offset: 2px;
-}
-
 /* ===== Footer ===== */
 .footer {
   border-top: 1px solid var(--border-divider);
@@ -1271,26 +1194,6 @@ body {
   background: var(--color-btn-disabled-bg);
   color: var(--text-disabled);
   box-shadow: none;
-}
-
-/* ===== Banner 广告区（Sprint 11：生成中停留页 + 结果页） ===== */
-.ad-banner-zone {
-  margin-top: 0;
-  margin-bottom: var(--space-xl);
-}
-.ad-slot--banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 250px;
-  background: var(--color-ad-card-bg);
-  border: 1.5px solid var(--color-ad-card-border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-.ad-slot--banner iframe {
-  display: block;
-  margin: 0 auto;
 }
 
 /* ===== 使用示例 ===== */
