@@ -103,7 +103,7 @@ async def select_reference_image_tags(
 
     try:
         resp = await client_cheap.chat.completions.create(
-            model=cfg["cheap"]["model"],
+            model=cfg.get("model") or "",  # Sprint 14：生产 config.json 只有顶层 model（原 cfg["cheap"] 必 KeyError，选择节点从未真正跑过）
             messages=[
                 {"role": "system", "content": _REFERENCE_SELECTION_SYSTEM_PROMPT+"\n\n"+_THINKING},
                 {
