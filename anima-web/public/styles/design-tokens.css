@@ -13,7 +13,7 @@
   --color-primary-deep: #3d56e0;         /* 主按钮底色（深一档；白字对比 ≈4.9:1） */
   --color-primary-deep-hover: #3349c9;   /* 主按钮 hover 加深 */
   --color-aurora-purple: #8a6cf0;        /* 极光紫：极光渐变、装饰强调（徽章用深一档） */
-  --color-star-gold: #ffd166;            /* 星光金："广告"标签、重点提示 */
+  --color-star-gold: #ffd166;            /* 星光金：重点提示、渐变点缀 */
   --color-stardust-cyan: #59c2e8;        /* 星尘青：链接、排队信息、空态引导 */
 
   /* ========== 2. 色板 · 功能色 ========== */
@@ -58,14 +58,7 @@
   --color-progress-track: rgba(255, 255, 255, 0.1);     /* 进度轨道 */
   --color-progress-fill: #5b7cff;                       /* 进度填充 */
 
-  /* ========== 7. 色板 · 广告与合规组件色（浅色化，深底上明暗反差可辨识） ========== */
-  --color-ad-card-bg: #ffffff;           /* 广告占位浅色卡片底 */
-  --color-ad-card-border: #171b34;       /* 广告卡片深色描边 */
-  --color-ad-label-bg: #ffd166;          /* 星光金"广告"标签底 */
-  --color-ad-label-text: #3b2e08;        /* 广告标签深色文字（≈9.3:1） */
-  --color-push-bg: #f7f9ff;              /* In-Page Push 浅色背景 */
-  --color-push-text: #2a3060;            /* Push 通知深色文字 */
-  --color-push-close: #5a6286;           /* Push 关闭按钮图标（浅底上 ≈5.6:1） */
+  /* ========== 7. 色板 · 合规组件色（Sprint 16：广告已下线，广告专用色令牌移除） ========== */
   --color-ai-badge-text: #ffffff;        /* "AI 生成"徽章文字 */
 
   /* ========== 8. 渐变 ========== */
@@ -88,7 +81,7 @@
   --font-size-body: 1rem;          /* 16px 正文 */
   --font-size-aux: 0.875rem;       /* 14px 辅助文本、按钮文字 */
   --font-size-caption: 0.8125rem;  /* 13px 注释、须知、页脚说明 */
-  --font-size-tag: 0.75rem;        /* 12px 徽章/标签（"AI 生成""广告"） */
+  --font-size-tag: 0.75rem;        /* 12px 徽章/标签（"AI 生成"） */
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
@@ -154,14 +147,12 @@
   --duration-normal: 0.25s;                      /* 常规过渡 */
   --duration-jump-pause: 1.5s;                   /* 任务终态（完成/失败）自动跳转结果页前的停留时长（UX 时序） */
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* 标准缓动 */
-  --z-push: 900;        /* In-Page Push 浮条 */
-  --z-toast: 1000;      /* 提示条/Toast */
+  --z-toast: 1000;      /* 提示条/Toast（Sprint 16：--z-push 随广告下线移除） */
   --z-overlay: 1100;    /* 弹层遮罩 */
   --z-lightbox: 1200;   /* 放大灯箱 */
 
   /* ========== 17. 深色模式 ========== */
-  /* 方向 C 本身即深色：深色为默认态，无额外暗色变量，也不存在浅色模式切换。
-     广告容器 / In-Page Push 通知条刻意浅色化属"广告可辨识"合规设计，非模式切换。 */
+  /* 方向 C 本身即深色：深色为默认态，无额外暗色变量，也不存在浅色模式切换。 */
 }
 
 /* ========== 18. 动效降级：prefers-reduced-motion 时关闭星点闪烁/光晕/进度动画 ========== */
