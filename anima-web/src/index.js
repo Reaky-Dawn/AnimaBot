@@ -45,17 +45,67 @@ const KV_GET_INTERVAL_MS = 200;
 const WAKE_GUARD_MS = 120000;
 
 /**
- * 唤醒引擎：GitHub workflow_dispatch → Actions → kaggle kernels push。
- * 背景：GitHub 免费版 schedule cron 被严重限流（288 次/天实际只跑 3 次），
- * 「引擎死 + 有任务」可能 5 小时无人重启；改为任务创建时主动唤醒，cron 仅兜底。
- * 需要 repo secret GH_WAKE_TOKEN（fine-grained PAT，Actions: read/write）。
+ * 引擎 notebook 全文（kaggle-notebook/animabot-worker.ipynb 的同步副本，Sprint 15）。
+ * 直推 kernels/push 时作为 text 字段上传；与 kaggle-notebook/ 目录内容必须保持一致
+ * （该目录同时保留给 GitHub Actions 兜底路径与本地 kaggle CLI 推送）。
+ */
+import KAGGLE_NOTEBOOK_TEXT from './kaggle-notebook-inline.js';
+
+/**
+ * 唤醒引擎（Sprint 15：Kaggle 直推优先，GitHub Actions 兜底）。
+ *
+ * 直推：Worker 持 KAGGLE_API_TOKEN secret 直接 POST /api/v1/kernels/push，
+ * 省掉「Actions runner 冷启动 + pip install kaggle + checkout」的 1-1.5 分钟中转。
+ * 兜底：直推缺 token/抛错时回退原 workflow_dispatch 路径（行为与 v17 前一致）。
+ * 防抖共用 wake/last（同 120s 只发一次）。
  */
 async function dispatchEngineWake(env) {
+  const last = await env.ANIMA_KV.get('wake/last');
+  if (last && Date.now() - Number(last) < WAKE_GUARD_MS) return;
+
+  // ---- 直推 Kaggle ----
+  const kgat = env.KAGGLE_API_TOKEN;
+  if (kgat) {
+    try {
+      const meta = {
+        slug: 'reagino/animabot-engine',
+        new_title: 'AnimaBot Engine',
+        text: KAGGLE_NOTEBOOK_TEXT,
+        language: 'python',
+        kernel_type: 'notebook',
+        is_private: true,
+        enable_gpu: true,
+        enable_internet: true,
+        dataset_data_sources: ['reagino/animamodel', 'reagino/animabot-secrets', 'reagino/comfyui-cache'],
+        kernel_data_sources: [],
+        competition_data_sources: [],
+        category_ids: [],
+      };
+      const resp = await fetch('https://www.kaggle.com/api/v1/kernels/push', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${kgat}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'anima-web-worker',
+        },
+        body: JSON.stringify(meta),
+      });
+      const bodyText = await resp.text();
+      if (resp.status === 200 && !/"error"\s*:\s*"[^"]+"/.test(bodyText)) {
+        await env.ANIMA_KV.put('wake/last', String(Date.now()));
+        console.log('[anima] engine wake: kaggle push ok:', bodyText.slice(0, 200));
+        return;
+      }
+      console.log(`[anima] engine wake: kaggle push rejected: ${resp.status} ${bodyText.slice(0, 300)}`);
+    } catch (e) {
+      console.log('[anima] engine wake: kaggle push error:', e && e.message);
+    }
+  }
+
+  // ---- 兜底：GitHub Actions dispatch ----
   const token = env.GH_WAKE_TOKEN;
   if (!token) return; // 未配置 secret 时静默跳过（Actions cron 仍作兜底）
   try {
-    const last = await env.ANIMA_KV.get('wake/last');
-    if (last && Date.now() - Number(last) < WAKE_GUARD_MS) return;
     const resp = await fetch(
       'https://api.github.com/repos/Reaky-Dawn/AnimaBot/actions/workflows/auto-restart.yml/dispatches',
       {
@@ -260,7 +310,7 @@ async function createTask(request, env, ctx) {
 
   // 唤醒引擎（引擎死 → dispatch 重启；防抖 120s；无 GH_WAKE_TOKEN 时跳过）
   // 带参考图的任务此刻还是 ref_pending（非 queued），Actions 会空跑——等上传完入队时再唤醒
-  if (!hasRef && ctx) ctx.waitUntil(dispatchEngineWake(env));
+  if (!hasRef && ctx?.waitUntil) ctx.waitUntil(dispatchEngineWake(env));
 
   return json({ id, task_token: taskToken, ref_upload_url: refUploadUrl }, { status: 201 });
 }
@@ -289,7 +339,7 @@ async function uploadRef(request, env, id, ctx) {
   await env.DB.prepare(
     `UPDATE tasks SET ref_ready = 1, status = 'queued', updated_at = ? WHERE id = ?`
   ).bind(Date.now(), id).run();
-  if (ctx) ctx.waitUntil(dispatchEngineWake(env));
+  if (ctx?.waitUntil) ctx.waitUntil(dispatchEngineWake(env));
   return json({ ok: true, status: 'queued' });
 }
 
@@ -304,7 +354,7 @@ async function refDone(request, env, id, ctx) {
   await env.DB.prepare(
     `UPDATE tasks SET ref_ready = 1, status = 'queued', updated_at = ? WHERE id = ?`
   ).bind(Date.now(), id).run();
-  if (ctx) ctx.waitUntil(dispatchEngineWake(env));
+  if (ctx?.waitUntil) ctx.waitUntil(dispatchEngineWake(env));
   return json({ ok: true, status: 'queued' });
 }
 
