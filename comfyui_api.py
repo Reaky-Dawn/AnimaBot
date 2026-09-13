@@ -31,14 +31,14 @@ COMFYUI_INSTANCES = [
         # Sprint 13.2：移除 --use-sage-attention（SageAttention 仅支持 sm_80+，T4=sm_75 不支持）
         "args": ["--disable-cuda-malloc", "--disable-dynamic-vram",
                  "--gpu-only", "--port", "8188"],
-        "env": {"CUDA_VISIBLE_DEVICES": "0"},
+        "env": {"CUDA_VISIBLE_DEVICES": "0", "HF_HUB_OFFLINE": "1"},
     },
     {
         "script": "/kaggle/working/ComfyUI/main.py",
         "cwd": "/kaggle/working/ComfyUI",
         "args": ["--disable-cuda-malloc", "--disable-dynamic-vram",
                  "--gpu-only", "--port", "8189"],
-        "env": {"CUDA_VISIBLE_DEVICES": "1"},
+        "env": {"CUDA_VISIBLE_DEVICES": "1", "HF_HUB_OFFLINE": "1"},
     },
 ]
 
