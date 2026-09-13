@@ -579,19 +579,6 @@ export function createCookieConsentBar(root, onConsent) {
 }
 
 /**
- * initPushAdClose —— In-Page Push 广告占位关闭按钮（占位期关闭即隐藏容器）
- * 参数：scope（默认 document，供两页初始化）
- */
-export function initPushAdClose(scope = document) {
-  scope.querySelectorAll('.ad-slot__close').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const slot = btn.closest('.ad-slot');
-      if (slot) slot.hidden = true;
-    });
-  });
-}
-
-/**
  * parsePngMetadata —— 客户端解析 PNG 文本元数据（tEXt / iTXt / zTXt 块）。
  * 返回 {key: value} 映射；无元数据时返回 {}。
  * @param {ArrayBuffer} buffer
@@ -635,8 +622,3 @@ export function parsePngMetadata(buffer) {
   }
   return meta;
 }
-
-/**
- * initPushAdClose —— In-Page Push 广告占位关闭按钮（占位期关闭即隐藏容器）
- * 参数：scope（默认 document，供两页初始化）
- */
