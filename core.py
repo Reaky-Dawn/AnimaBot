@@ -36,7 +36,10 @@ Sprint 13 变更（用户 2026-08-30 需求）：
 """
 
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
+# Sprint 14：HF_HUB_OFFLINE 不再设进程级——它会把 AutoPrompt 参考图识别
+# （pixai 标签器 / 画师识别器首次调用需从 HF 下载模型）直接掐死成
+# LocalEntryNotFoundError，且异常被静默吞掉，参考图语义全丢。
+# 离线需求只针对 ComfyUI 子进程（模型全本地），已挪到 comfyui_api.COMFYUI_INSTANCES env。
 
 import asyncio
 import base64
@@ -372,7 +375,7 @@ async def process_task(task: dict):
 
             # 2) 提示词 Agent（tags_prompt / natural_prompt / description / characters）
             tags_prompt, natural_prompt, description, characters = await agent(
-                prompt, images=reference_images
+                prompt, images=reference_images, log_cb=tlog.add
             )
             # 阶段性结果摘要：只记长度不记内容（tech-design 3.3.4）
             tlog.add(
@@ -476,6 +479,54 @@ def _prewarm_if_needed():
     _last_prewarm = time.time()
     return prewarm_comfyui
 
+
+# ===== Sprint 15：首单提速——启动期剥离「与质量无关」的冷开销 =====
+
+def _prefetch_reference_models():
+    """同步预取参考图识别模型（pixai 标签器 selected_tags.csv+onnx / 画师 style_predictor_500.onnx）。
+
+    带参考图的首单原本要在识别阶段现场下载 10-60s；boot 期并发预取后首单识别零下载。
+    失败仅打日志（Kaggle 到 HF 网络抖动不影响无参考图任务；参考图任务运行期仍会自行重试下载）。
+    """
+    def _fetch():
+        from huggingface_hub import hf_hub_download
+        hf_hub_download(repo_id="deepghs/pixai-tagger-v0.9-onnx", filename="selected_tags.csv")
+        hf_hub_download(repo_id="deepghs/pixai-tagger-v0.9-onnx", filename="model.onnx")
+        hf_hub_download(repo_id="AugustLabs/Author_ID", filename="style_predictor_500.onnx")
+
+    def _fetch_artist():
+        # 画师识别在 AutoPrompt.artist_recognition 里走同一 hf_hub_download 逻辑
+        from AutoPrompt.artist_recognition import _resolve_model_path
+        _resolve_model_path()
+
+    import concurrent.futures as _cf
+    t0 = time.time()
+    with _cf.ThreadPoolExecutor(max_workers=2) as pool:
+        f_tags = pool.submit(_fetch)
+        f_artist = pool.submit(_fetch_artist)
+        for f, name in ((f_tags, "pixai 标签器"), (f_artist, "画师识别器")):
+            try:
+                f.result()
+                log(f"[engine] 参考图模型预取完成: {name}（累计 {time.time() - t0:.0f}s）")
+            except Exception as e:
+                log(f"[engine] 参考图模型预取失败（不阻塞，首次使用时现场下载）: {name}: {e}")
+
+
+def _prewarm_mcp():
+    """同步预热第三方标签搜索 MCP（HF Space 冷启动 20-90s，boot 期把它烧掉）。
+
+    check_mcp_health 会真实走一次 initialize + tools/call，让 Space 完成冷启动；
+    失败不阻塞（运行期 _rpc 本就有双端点 failover）。
+    """
+    try:
+        from AutoPrompt.tools import check_mcp_health
+        t0 = time.time()
+        health = check_mcp_health(timeout=20)
+        ok = [k for k in ("hf", "ms") if health.get(k, {}).get("ok")]
+        log(f"[engine] MCP 预热完成（可用端点: {ok or '无'}，{time.time() - t0:.0f}s）")
+    except Exception as e:
+        log(f"[engine] MCP 预热异常（不阻塞）: {e}")
+
 def _validate_env():
     """启动前校验关键环境变量（Sprint 11 修复：缺配置时给出明确报错而非循环刷 Illegal header）。"""
     problems = []
@@ -500,6 +551,11 @@ async def main():
     async def _boot_prewarm():
         try:
             await ensure_comfyui()
+            # Sprint 15：识别模型与 MCP 预热放在线程里与 ComfyUI 启动并行，
+            # 全部不阻塞 worker 循环（失败仅记日志）
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: (_prefetch_reference_models(), _prewarm_mcp())
+            )
             # 并发两份预热 → 双 GPU 权重同时驻留（pick_idle_host 会把两个请求分到两卡）
             await asyncio.gather(prewarm_comfyui(), prewarm_comfyui())
         except Exception as e:
