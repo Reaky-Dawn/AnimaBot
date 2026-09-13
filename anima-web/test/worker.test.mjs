@@ -359,6 +359,9 @@ describe('每日流量统计（Sprint 16）', () => {
     assert.equal(day.pv_index, 4);
     assert.equal(day.pv_result, 1);
     assert.equal(day.uv, 2); // A + B（无 token 不计）
+    // totals：总 PV 与跨日 UV 并集（1 天窗口：并集 = 当日 UV）
+    assert.equal(s.json.totals.pv, 5);
+    assert.equal(s.json.totals.uv, 2);
   });
 
   test('uv 去重按日分键（不同日互不影响——模拟：手动写昨日键后今日计数不受污染）', async () => {
@@ -367,7 +370,7 @@ describe('每日流量统计（Sprint 16）', () => {
     const dstr = new Date(Date.now() + 8 * 3600 * 1000 - 86400000).toISOString().slice(0, 10);
     await env.ANIMA_KV.put(`uv/${dstr}`, JSON.stringify(['x'.repeat(24)]));
     await env.ANIMA_KV.put(`stats/${dstr}`, JSON.stringify({ pv_index: 7, pv_result: 3 }));
-    // 今日打点
+    // 今日打点（含与昨日相同的摘要 token → 跨日并集去重）
     await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-C', p: 'index' } });
     const s = await api(env, '/api/stats/summary?days=2');
     const today = s.json.items.find((i) => i.date === new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10));
@@ -376,6 +379,24 @@ describe('每日流量统计（Sprint 16）', () => {
     assert.equal(today.uv, 1);
     assert.equal(yest.pv, 10);
     assert.equal(yest.uv, 1);
+    // totals：跨日 UV 并集 = 2 个不同摘要（昨日 x*24 与今日 device-C 摘要必然不同）；
+    // 若昨日摘要等于今日 device-C 摘要则应为 1——这里摘要不同，断言 2
+    assert.equal(s.json.totals.uv, 2);
+    assert.equal(s.json.totals.pv, 11);
+  });
+
+  test('每日任务数（tasks/{date}）进 summary 且 totals.tasks 合计', async () => {
+    const env = makeEnv();
+    // 今日建 1 单（bumpDailyTaskCount 走 ctx.waitUntil；测试 ctx 无 waitUntil → 手动写键模拟昨日，今日靠 D1 兜底显示）
+    await createTask(env, '统计', '10.2.2.2');
+    const dstr = new Date(Date.now() + 8 * 3600 * 1000 - 86400000).toISOString().slice(0, 10);
+    await env.ANIMA_KV.put(`tasks/${dstr}`, JSON.stringify({ n: 4 }));
+    const s = await api(env, '/api/stats/summary?days=2');
+    const today = s.json.items[0]; // items[0] = 今日
+    const yest = s.json.items[1];
+    assert.equal(yest.tasks, 4);
+    assert.equal(today.tasks, 1); // D1 现算兜底
+    assert.equal(s.json.totals.tasks, 5);
   });
 
   test('days 参数钳制 1..90', async () => {
