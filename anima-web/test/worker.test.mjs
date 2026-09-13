@@ -73,7 +73,9 @@ function makeDb() {
     // COUNT 类
     if (/COUNT\(\*\) AS n FROM tasks/i.test(s)) {
       let n;
-      if (/status = 'queued' AND ref_ready = 1 AND created_at < /i.test(s)) {
+      if (/created_at >= \?/i.test(s)) {
+        n = rows.filter((r) => r.created_at >= args[0]).length;
+      } else if (/status = 'queued' AND ref_ready = 1 AND created_at < /i.test(s)) {
         n = rows.filter((r) => r.status === 'queued' && r.ref_ready === 1 && r.created_at < args[0] && r.id !== args[1]).length;
       } else if (/status = 'queued' AND ref_ready = 1/i.test(s)) {
         n = rows.filter((r) => r.status === 'queued' && r.ref_ready === 1).length;
@@ -334,5 +336,60 @@ describe('引擎 status（保活/自动重启依据）', () => {
     assert.equal(st.json.queued_count, 0);
     assert.equal(st.json.active_count, 2);
     assert.equal(st.json.engine_alive, true);
+  });
+});
+
+describe('每日流量统计（Sprint 16）', () => {
+  test('PV 计数 + UV 同 token 同日去重', async () => {
+    const env = makeEnv();
+    // 同一 token 打 3 次（2 index + 1 result）→ pv=3, uv=1
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-A', p: 'index' } });
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-A', p: 'index' } });
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-A', p: 'result' } });
+    // 另一 token 1 次
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-B', p: 'index' } });
+    // 无 token（隐私模式）→ 只记 PV
+    await api(env, '/api/stats/hit', { method: 'POST', body: {} });
+
+    const s = await api(env, '/api/stats/summary?days=1');
+    assert.equal(s.status, 200);
+    assert.equal(s.json.items.length, 1);
+    const day = s.json.items[0];
+    assert.equal(day.pv, 5);
+    assert.equal(day.pv_index, 4);
+    assert.equal(day.pv_result, 1);
+    assert.equal(day.uv, 2); // A + B（无 token 不计）
+  });
+
+  test('uv 去重按日分键（不同日互不影响——模拟：手动写昨日键后今日计数不受污染）', async () => {
+    const env = makeEnv();
+    // 直接向 KV 写昨日 uv 集合
+    const dstr = new Date(Date.now() + 8 * 3600 * 1000 - 86400000).toISOString().slice(0, 10);
+    await env.ANIMA_KV.put(`uv/${dstr}`, JSON.stringify(['x'.repeat(24)]));
+    await env.ANIMA_KV.put(`stats/${dstr}`, JSON.stringify({ pv_index: 7, pv_result: 3 }));
+    // 今日打点
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'device-C', p: 'index' } });
+    const s = await api(env, '/api/stats/summary?days=2');
+    const today = s.json.items.find((i) => i.date === new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10));
+    const yest = s.json.items.find((i) => i.date === dstr);
+    assert.equal(today.pv, 1);
+    assert.equal(today.uv, 1);
+    assert.equal(yest.pv, 10);
+    assert.equal(yest.uv, 1);
+  });
+
+  test('days 参数钳制 1..90', async () => {
+    const env = makeEnv();
+    const s1 = await api(env, '/api/stats/summary?days=0');
+    assert.equal(s1.json.days, 1);
+    const s2 = await api(env, '/api/stats/summary?days=999');
+    assert.equal(s2.json.days, 90);
+  });
+
+  test('today_tasks 反映当日建任务数', async () => {
+    const env = makeEnv();
+    await createTask(env, '统计', '10.2.2.2');
+    const s = await api(env, '/api/stats/summary?days=1');
+    assert.equal(s.json.today_tasks, 1);
   });
 });
