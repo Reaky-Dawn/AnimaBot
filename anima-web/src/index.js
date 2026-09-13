@@ -210,11 +210,14 @@ export default {
     console.log(`[anima] cron cleanup: ${stale.results.length} marked failed, ${toDelete.length} purged`);
     // 3) 统计键保险清扫（KV 有 90 天 TTL 兜底；此处清理潜在孤儿键——每周一跑一次即可，其余跳过）
     if (new Date(now + 8 * 3600 * 1000).getUTCDay() === 1) {
-      const list = await env.ANIMA_KV.list({ prefix: 'stats/' });
-      const listUv = await env.ANIMA_KV.list({ prefix: 'uv/' });
+      const lists = [];
+      for (const prefix of ['stats/', 'uv/', 'tasks/']) {
+        const l = await env.ANIMA_KV.list({ prefix });
+        lists.push(...l.keys);
+      }
       const cutoffDate = statsDate(now - (STATS_RETENTION_DAYS + 2) * 86400000);
       let purged = 0;
-      for (const k of [...list.keys, ...listUv.keys]) {
+      for (const k of lists) {
         const d = k.name.split('/')[1];
         if (d && d < cutoffDate) { await env.ANIMA_KV.delete(k.name); purged++; }
       }
@@ -328,11 +331,28 @@ async function createTask(request, env, ctx) {
     ? `/api/tasks/${id}/ref?token=${taskToken}`
     : undefined;
 
+  // 每日任务数累计（Sprint 16：D1 任务即用即删，历史日靠此 KV 计数支撑统计折线）
+  if (ctx?.waitUntil) ctx.waitUntil(bumpDailyTaskCount(env, now));
+
   // 唤醒引擎（引擎死 → dispatch 重启；防抖 120s；无 GH_WAKE_TOKEN 时跳过）
   // 带参考图的任务此刻还是 ref_pending（非 queued），Actions 会空跑——等上传完入队时再唤醒
   if (!hasRef && ctx?.waitUntil) ctx.waitUntil(dispatchEngineWake(env));
 
   return json({ id, task_token: taskToken, ref_upload_url: refUploadUrl }, { status: 201 });
+}
+
+/** 每日建任务数 +1（KV tasks/{date}；读改写竞态误差可接受，同 PV 口径） */
+async function bumpDailyTaskCount(env, now) {
+  try {
+    const key = `tasks/${statsDate(now)}`;
+    const raw = await env.ANIMA_KV.get(key);
+    let v;
+    try { v = raw ? JSON.parse(raw) : null; } catch { v = null; }
+    const n = v && Number.isFinite(v.n) ? v.n + 1 : 1;
+    await env.ANIMA_KV.put(key, JSON.stringify({ n }), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+  } catch (e) {
+    console.log('[anima] daily task count error:', e && e.message);
+  }
 }
 
 /** 参考图上传（KV 版）：task_token 校验 → 写 KV → 置 queued 入队 */
@@ -654,29 +674,52 @@ async function statsSummary(env, url) {
   const parsed = parseInt(url.searchParams.get('days') || '30', 10);
   const days = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 30, 1), STATS_RETENTION_DAYS);
   const out = [];
+  const uniqueTokens = new Set(); // 跨日 UV 并集（同一摘要只算一次）
+  let totalPv = 0, totalTasks = 0;
+  // 当日任务数（D1 现算；自然日按北京时间切。D1 任务即用即删，历史日只认 KV 累计）
+  const dayStartCn = new Date(statsDate() + 'T00:00:00+08:00').getTime();
+  const tasks = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM tasks WHERE created_at >= ?`
+  ).bind(dayStartCn).first();
+  const todayTasks = tasks ? tasks.n : 0;
   for (let i = 0; i < days; i++) {
     const date = statsDate(Date.now() - i * 86400000);
     const pvRaw = await env.ANIMA_KV.get(`stats/${date}`);
     const uvRaw = await env.ANIMA_KV.get(`uv/${date}`);
-    let c = null, uv = null;
+    const tkRaw = await env.ANIMA_KV.get(`tasks/${date}`);
+    let c = null, uv = null, tk = null;
     try { c = pvRaw ? JSON.parse(pvRaw) : null; } catch { c = null; }
     try { uv = uvRaw ? JSON.parse(uvRaw) : null; } catch { uv = null; }
+    try { tk = tkRaw ? JSON.parse(tkRaw) : null; } catch { tk = null; }
     const pvIndex = c && Number.isFinite(c.pv_index) ? c.pv_index : 0;
     const pvResult = c && Number.isFinite(c.pv_result) ? c.pv_result : 0;
+    const dayUvHashes = Array.isArray(uv) ? uv : [];
+    for (const h of dayUvHashes) uniqueTokens.add(h);
+    // 今日任务数以 D1 实时为准（bump 计数经 waitUntil 异步，可能滞后）
+    const dayTasks = i === 0
+      ? Math.max(tk && Number.isFinite(tk.n) ? tk.n : 0, todayTasks)
+      : (tk && Number.isFinite(tk.n) ? tk.n : 0);
+    totalPv += pvIndex + pvResult;
+    totalTasks += dayTasks;
     out.push({
       date,
       pv: pvIndex + pvResult,
       pv_index: pvIndex,
       pv_result: pvResult,
-      uv: Array.isArray(uv) ? uv.length : 0,
+      uv: dayUvHashes.length,
+      tasks: dayTasks,
     });
   }
-  // 当日任务数（D1 现算；自然日按北京时间切）
-  const dayStartCn = new Date(statsDate() + 'T00:00:00+08:00').getTime();
-  const tasks = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM tasks WHERE created_at >= ?`
-  ).bind(dayStartCn).first();
-  return json({ days, today_tasks: tasks ? tasks.n : 0, items: out });
+  return json({
+    days,
+    today_tasks: todayTasks,
+    totals: {
+      pv: totalPv,            // 总浏览量（区间合计）
+      uv: uniqueTokens.size,  // 独立访客（区间内跨日去重并集）
+      tasks: totalTasks,      // 总任务数（区间合计；今日含 D1 实时）
+    },
+    items: out,               // 时间序列（折线数据源；items[0] 为今日，向过去回溯）
+  });
 }
 
 // ===== 工具 =====
