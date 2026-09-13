@@ -422,11 +422,14 @@ def _build_recognized_image(
     tag_result,
     artist_result,
 ) -> tuple[str, dict]:
+    # Sprint 14：原 print("...%s...", ...) 误用——print 不做 %-格式化，异常被
+    # 打成 tuple 导致参考图识别静默失败时日志不可读（掩盖 OfflineMode 问题三天）。
     if isinstance(tag_result, Exception):
-        print("图像%d标签识别失败: %s", image_index, tag_result)
+        print(f"图像{image_index}标签识别失败: {tag_result!r}")
         tag_result = {}
     if isinstance(artist_result, Exception):
-        print("图像%d画师识别失败: %s", image_index, artist_result)
+        print(f"图像{image_index}画师识别失败: {artist_result!r}")
+        artist_result = {}
         artist_result = {}
 
     if not isinstance(tag_result, dict):
@@ -449,10 +452,10 @@ async def _recognize_images(images: list[bytes]) -> dict[str, dict]:
     )
 
     if isinstance(tag_results, Exception):
-        print("图像标签批处理失败: %s", tag_results)
+        print(f"图像标签批处理失败: {tag_results!r}")
         tag_results = [tag_results] * len(images)
     if isinstance(artist_results, Exception):
-        print("图像画师批处理失败: %s", artist_results)
+        print(f"图像画师批处理失败: {artist_results!r}")
         artist_results = [artist_results] * len(images)
 
     recognized = []
