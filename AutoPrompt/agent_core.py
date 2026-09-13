@@ -329,21 +329,46 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
 async def agent(
     user_description: str,
     images: list[bytes] | None = None,
+    log_cb=None,
 ) -> tuple[str, str, str, List[str]]:
+    """log_cb(action, detail)：可选的阶段打点回调（core.py 传入 TaskLog.add），
+    让参考图链路各阶段结果摘要进入任务日志，失败时网页可见卡在哪一步。"""
+    def _log(action: str, detail: str = ""):
+        if log_cb:
+            try:
+                log_cb(action, detail)
+            except Exception:
+                pass
+
     logger.info("用户描述: %s", user_description)
 
     for k in quality_tags:
         user_description = user_description.replace(k, quality_tags[k])
 
     img_tags = await _recognize_images(images) if images else None
+    if images:
+        if img_tags:
+            counts = {k: len(v.get("general") or []) + len(v.get("character") or []) + len(v.get("artist") or [])
+                      for k, v in img_tags.items()}
+            _log("ref_recognized", f"参考图识别完成（{counts}）")
+        else:
+            _log("ref_recognized", "⚠️ 参考图识别结果为空（识别器异常被降级），参考图语义将丢失")
 
     original_description = user_description
 
     protected_tags_by_image = None
     if img_tags:
-        img_tags_for_llm = _filter_img_tags_for_llm(img_tags)
-        protected_tags_by_image = await select_reference_image_tags(original_description, img_tags_for_llm)
-        logger.info("保留图像标签: %s", json.dumps(protected_tags_by_image, ensure_ascii=False))
+        if not any(
+            (v.get("general") or v.get("character") or v.get("artist"))
+            for v in img_tags.values()
+        ):
+            _log("ref_skipped", "识别结果为空，跳过参考图标签选择")
+        else:
+            img_tags_for_llm = _filter_img_tags_for_llm(img_tags)
+            protected_tags_by_image = await select_reference_image_tags(original_description, img_tags_for_llm)
+            logger.info("保留图像标签: %s", json.dumps(protected_tags_by_image, ensure_ascii=False))
+            keep_counts = {k: len(v) for k, v in (protected_tags_by_image or {}).items()}
+            _log("ref_selected", f"参考图保护标签（keep 数 {keep_counts}）")
 
     zh_tags, expanded_description = await expand_zh_tags(user_description, protected_tags_by_image)
     zh_tags, en_tags = _split_tags_by_language(zh_tags)
