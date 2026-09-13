@@ -376,5 +376,132 @@ class TestFailoverFunnel(unittest.TestCase):
         self.assertNotIn("thinking", captured.get("extra_body") or {})  # 第二次调用已剥掉 thinking
 
 
+class TestSprint14RefChain(unittest.TestCase):
+    """Sprint 14：参考图链路修复回归。
+
+    背景：① reference.py 用 cfg["cheap"]["model"] 而生产 config.json 只有顶层
+    model → KeyError，参考图选择节点从未真正执行过；② core.py 进程级
+    HF_HUB_OFFLINE=1 把 pixai/画师识别器的 HF 下载掐死，异常被静默吞成空标签；
+    ③ utils print 误用 %-格式化掩盖了前两个问题。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.machinery
+        if "openai" not in sys.modules:
+            _openai_stub = types.ModuleType("openai")
+            _openai_stub.AsyncOpenAI = type("AsyncOpenAI", (), {})
+            sys.modules["openai"] = _openai_stub
+
+        def _load_real(mod_name, file_name):
+            loader = importlib.machinery.SourceFileLoader(
+                mod_name, str(ROOT / "AutoPrompt" / file_name))
+            spec = importlib.util.spec_from_loader(mod_name, loader)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            loader.exec_module(mod)
+            return mod
+
+        # 真实 clients（cwd 已被 chdir 到 AnimaBot-kaggle，读本地 config.json）
+        cls.clients = _load_real("AutoPrompt.clients", "clients.py")
+        # agent_prompts / tools / utils 以最小 stub 注册（agent_core 的 import 依赖）
+        prompts = types.ModuleType("AutoPrompt.agent_prompts")
+        for n in ("_ANIMA_OUTPUT_FORMAT", "_ANIMA_ASSEMBLY_DIRECTIVE", "_JAILBREAKER",
+                  "_THINKING", "_CLASSIFICATION_SYSTEM_PROMPT", "_CHARACTER_SELECTION_SYSTEM_PROMPT",
+                  "_ARTIST_SELECTION_SYSTEM_PROMPT", "_EXPAND_TAGS_SYSTEM_PROMPT",
+                  "_DRAWING_REQUEST_PARSER_PROMPT", "_TAG_CATEGORY_CLASSIFICATION_PROMPT",
+                  "_REFERENCE_SELECTION_SYSTEM_PROMPT"):
+            setattr(prompts, n, "")
+        prompts.quality_tags = {}
+        sys.modules["AutoPrompt.agent_prompts"] = prompts
+        tools = types.ModuleType("AutoPrompt.tools")
+        for n in ("execute_search_tags", "execute_get_related_tags", "execute_get_artist_recommendations"):
+            setattr(tools, n, None)
+        sys.modules["AutoPrompt.tools"] = tools
+        utils_stub = types.ModuleType("AutoPrompt.utils")
+        for n in ("sample_tags", "escape_parentheses", "normalize_anima_tags", "reapply_user_weights",
+                  "sample_artist_candidate", "_split_tags_by_language", "_split_layers",
+                  "_recognize_images", "_filter_img_tags_for_llm", "_parse_tag_categories"):
+            setattr(utils_stub, n, lambda *a, **k: None)
+        utils_stub._split_tags_by_language = lambda s: (s, [])
+        utils_stub._split_layers = lambda s: (s, "none")
+        utils_stub.normalize_anima_tags = lambda s: s
+        utils_stub.reapply_user_weights = lambda t, o: t
+        sys.modules["AutoPrompt.utils"] = utils_stub
+        # 真实 reference / agent_core（相对 import 现在都能解析）
+        cls.reference = _load_real("AutoPrompt.reference", "reference.py")
+        cls.agent_core = _load_real("AutoPrompt.agent_core", "agent_core.py")
+
+    def test_no_hf_offline_in_engine_process(self):
+        # 引擎进程不得再设 HF_HUB_OFFLINE（已挪到 ComfyUI 子进程 env）
+        src = (ROOT / "core.py").read_text(encoding="utf-8")
+        self.assertNotIn('os.environ["HF_HUB_OFFLINE"]', src)
+        # ComfyUI 子进程 env 中必须保留（模型全本地）
+        comfy_src = (ROOT / "comfyui_api.py").read_text(encoding="utf-8")
+        self.assertIn('"HF_HUB_OFFLINE": "1"', comfy_src)
+        self.assertEqual(comfy_src.count('"HF_HUB_OFFLINE": "1"'), 2)  # 8188/8189 两实例
+
+    def test_reference_selection_uses_top_level_model(self):
+        # 生产形态 config（providers+model，无 cheap）下，选择节点正常调用且 model 取顶层
+        self.reference.cfg = {"providers": self.clients.PROVIDERS, "model": "qwen3.8-flash"}
+        self.reference.client_cheap = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(
+                create=_fake_selection_create)))
+        result = asyncio.run(self.reference.select_reference_image_tags("画一个女孩", {
+            "图像1": {"general": {"1girl": 0.9}, "character": {}, "artist": {}}}))
+        self.assertEqual(result, {"图像1": ["1girl"]})
+        self.assertEqual(_fake_selection_calls["model"], "qwen3.8-flash")
+
+    def test_recognize_failure_log_readable(self):
+        # utils.py 不再有 print("...%s...", ...) 误用（异常信息须可读）
+        src = (ROOT / "AutoPrompt" / "utils.py").read_text(encoding="utf-8")
+        self.assertNotIn('print("图像%d标签识别失败: %s"', src)
+        self.assertNotIn('print("图像%d画师识别失败: %s"', src)
+        self.assertIn("标签识别失败: {tag_result!r}", src)
+
+    def test_agent_log_cb_invoked(self):
+        # agent(log_cb=...) 阶段打点可用（stub 识别为空 → 应有 ref_recognized 打点）
+        ag = self.agent_core
+
+        async def fake_recognize(images):
+            return {}
+
+        ag._recognize_images = fake_recognize
+
+        async def fake_expand(desc, protected=None):
+            return "", ""
+
+        ag.expand_zh_tags = fake_expand
+
+        async def fake_search(zh, desc):
+            return [], []
+
+        ag.search = fake_search
+
+        async def fake_final(**kw):
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(
+                message=types.SimpleNamespace(content="", reasoning_content=""))])
+
+        ag.client_quality = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=fake_final)))
+
+        logs = []
+        asyncio.run(ag.agent("测试描述", images=[b"x"], log_cb=lambda a, d="": logs.append(a)))
+        self.assertIn("ref_recognized", logs)
+
+
+# reference 选择节点 fake（供 TestSprint14RefChain 使用）
+_fake_selection_calls = {}
+
+
+async def _fake_selection_create(**kw):
+    _fake_selection_calls.clear()
+    _fake_selection_calls["model"] = kw.get("model")
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(
+        message=types.SimpleNamespace(content=json.dumps({
+            "images": [{"image": "图像1", "keep": ["1girl"], "drop": []}]}),
+            ensure_ascii=False))])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
