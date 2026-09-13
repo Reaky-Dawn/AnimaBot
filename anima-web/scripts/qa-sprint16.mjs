@@ -40,6 +40,17 @@ const server = http.createServer((req, res) => {
     res.end('{"ok":true}');
     return;
   }
+  if (u.pathname === '/api/stats/summary') {
+    const days = Math.min(parseInt(u.searchParams.get('days') || '30', 10) || 30, 90);
+    const items = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+      items.push({ date: d, pv: 5 + ((i * 7) % 11), pv_index: 3, pv_result: 2, uv: 2 + (i % 4), tasks: i % 3 });
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ days, today_tasks: 3, totals: { pv: items.reduce((a, b) => a + b.pv, 0), uv: 9, tasks: items.reduce((a, b) => a + b.tasks, 0) }, items }));
+    return;
+  }
   let p = u.pathname === '/' ? '/index.html' : u.pathname;
   const fp = join(PUBLIC, p);
   if (existsSync(fp)) {
@@ -90,6 +101,26 @@ try {
   if (adsResult !== 0) failures.push(`结果页残留广告元素 ${adsResult} 个`);
   const resultOk = await page.evaluate(() => !!document.body);
   if (!resultOk) failures.push('结果页 body 缺失');
+
+  // ---- 统计看板（stats.html）：折线 SVG 渲染 + KPI 填充 ----
+  const sPage = await browser.newPage();
+  const sErrors = [];
+  sPage.on('pageerror', (e) => sErrors.push(e.message));
+  sPage.on('console', (m) => { if (m.type() === 'error') sErrors.push(m.text()); });
+  await sPage.goto(`${BASE}/stats.html`, { waitUntil: 'networkidle0' });
+  await new Promise((r) => setTimeout(r, 600));
+  const statsState = await sPage.evaluate(() => ({
+    pv: document.getElementById('kpi-pv')?.textContent,
+    uv: document.getElementById('kpi-uv')?.textContent,
+    tasks: document.getElementById('kpi-tasks')?.textContent,
+    svgPaths: document.querySelectorAll('#chart svg path').length,
+    err: !document.getElementById('stats-error')?.hidden,
+  }));
+  console.log('stats page:', JSON.stringify(statsState));
+  if (statsState.svgPaths < 3) failures.push('stats.html 折线未渲染（path<3）');
+  if (statsState.pv === '–' || statsState.uv === '–' || statsState.tasks === '–') failures.push('stats.html KPI 未填充');
+  if (statsState.err) failures.push('stats.html 显示错误态');
+  if (sErrors.length) failures.push(`stats.html errors: ${sErrors.slice(0, 2).join('|')}`);
 
   // ---- 统计上报断言 ----
   await new Promise((r) => setTimeout(r, 800));
