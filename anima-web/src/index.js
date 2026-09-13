@@ -167,6 +167,14 @@ export default {
       return handleTasks(request, env, path, url, ctx);
     }
 
+    // ---- 每日流量统计（Sprint 16：无 IP/UA 收集，只记日期与数字） ----
+    if (path === '/api/stats/hit' && request.method === 'POST') {
+      return recordStatsHit(request, env);
+    }
+    if (path === '/api/stats/summary' && request.method === 'GET') {
+      return statsSummary(env, url);
+    }
+
     return new Response('Not Found', { status: 404 });
   },
 
@@ -200,7 +208,19 @@ export default {
       await deleteStoredImages(env, row);
     }
     console.log(`[anima] cron cleanup: ${stale.results.length} marked failed, ${toDelete.length} purged`);
-    // 3) 兜底唤醒：仍有未终态任务且引擎已死 → dispatch 重启（与创建时唤醒共用防抖）
+    // 3) 统计键保险清扫（KV 有 90 天 TTL 兜底；此处清理潜在孤儿键——每周一跑一次即可，其余跳过）
+    if (new Date(now + 8 * 3600 * 1000).getUTCDay() === 1) {
+      const list = await env.ANIMA_KV.list({ prefix: 'stats/' });
+      const listUv = await env.ANIMA_KV.list({ prefix: 'uv/' });
+      const cutoffDate = statsDate(now - (STATS_RETENTION_DAYS + 2) * 86400000);
+      let purged = 0;
+      for (const k of [...list.keys, ...listUv.keys]) {
+        const d = k.name.split('/')[1];
+        if (d && d < cutoffDate) { await env.ANIMA_KV.delete(k.name); purged++; }
+      }
+      if (purged) console.log(`[anima] stats purge: ${purged} keys`);
+    }
+    // 4) 兜底唤醒：仍有未终态任务且引擎已死 → dispatch 重启（与创建时唤醒共用防抖）
     const pending = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM tasks WHERE status IN ('queued','ref_pending','prompting','prompt_done','drawing')`
     ).first();
@@ -569,6 +589,94 @@ async function handleEngine(request, env, path, url) {
   }
 
   return json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
+}
+
+// ===== 每日流量统计（Sprint 16） =====
+
+/** 统计保留天数（Cron 清理 KV stats/* 超龄键） */
+const STATS_RETENTION_DAYS = 90;
+
+/**
+ * 北京时间（UTC+8）日期串 yyyy-mm-dd —— 统计的「每日」按国内时区切分。
+ */
+function statsDate(now = Date.now()) {
+  return new Date(now + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * POST /api/stats/hit —— 页面载入上报（前端 fire-and-forget）。
+ * body: { d?: deviceToken|null, p?: 'index'|'result' }
+ * 隐私模型（web-compliance 对齐）：不收集 IP/UA/Referer/指纹；
+ * device token 是浏览器 localStorage 里自生成的随机 UUID，服务端只存其 SHA-256 摘要
+ * （即使 KV 泄露也无法反推/关联用户），且仅当日可见、按日分键、90 天自动清理。
+ * PV：KV stats/{date} JSON 计数器（读改写；秒级并发竞态误差可接受——小流量场景）。
+ * UV：KV uv/{date} 存摘要集合（JSON 数组；同日同 token 只计 1）。
+ */
+async function recordStatsHit(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const page = body.p === 'result' ? 'result' : 'index';
+  const date = statsDate();
+
+  // ---- PV（读写竞态容忍：≤ 并发数误差，小流量无碍；D1 无这类高频小计数需求） ----
+  const pvKey = `stats/${date}`;
+  const raw = await env.ANIMA_KV.get(pvKey);
+  let counter;
+  try { counter = raw ? JSON.parse(raw) : null; } catch { counter = null; }
+  if (!counter || typeof counter !== 'object') counter = { pv_index: 0, pv_result: 0 };
+  if (page === 'result') counter.pv_result += 1; else counter.pv_index += 1;
+  await env.ANIMA_KV.put(pvKey, JSON.stringify(counter), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+
+  // ---- UV（token 摘要去重；无 token 只记 PV 不计 UV） ----
+  let uvAdded = 0;
+  const token = typeof body.d === 'string' ? body.d.slice(0, 64) : '';
+  if (token) {
+    const digestBits = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('anima-uv:' + token));
+    const uvHash = [...new Uint8Array(digestBits)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
+    const uvKey = `uv/${date}`;
+    const uvRaw = await env.ANIMA_KV.get(uvKey);
+    let set;
+    try { set = uvRaw ? JSON.parse(uvRaw) : []; } catch { set = []; }
+    if (Array.isArray(set) && !set.includes(uvHash)) {
+      set.push(uvHash);
+      await env.ANIMA_KV.put(uvKey, JSON.stringify(set), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+      uvAdded = 1;
+    }
+  }
+
+  return json({ ok: true, uv: uvAdded });
+}
+
+/**
+ * GET /api/stats/summary?days=30 —— 公开只读汇总（站长看板/人工查看）。
+ * 返回近 N 天（默认 30，≤90）每日：pv（两页合计）、pv_index、pv_result、uv、tasks（当日建任务数，D1 现算）。
+ */
+async function statsSummary(env, url) {
+  const parsed = parseInt(url.searchParams.get('days') || '30', 10);
+  const days = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 30, 1), STATS_RETENTION_DAYS);
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const date = statsDate(Date.now() - i * 86400000);
+    const pvRaw = await env.ANIMA_KV.get(`stats/${date}`);
+    const uvRaw = await env.ANIMA_KV.get(`uv/${date}`);
+    let c = null, uv = null;
+    try { c = pvRaw ? JSON.parse(pvRaw) : null; } catch { c = null; }
+    try { uv = uvRaw ? JSON.parse(uvRaw) : null; } catch { uv = null; }
+    const pvIndex = c && Number.isFinite(c.pv_index) ? c.pv_index : 0;
+    const pvResult = c && Number.isFinite(c.pv_result) ? c.pv_result : 0;
+    out.push({
+      date,
+      pv: pvIndex + pvResult,
+      pv_index: pvIndex,
+      pv_result: pvResult,
+      uv: Array.isArray(uv) ? uv.length : 0,
+    });
+  }
+  // 当日任务数（D1 现算；自然日按北京时间切）
+  const dayStartCn = new Date(statsDate() + 'T00:00:00+08:00').getTime();
+  const tasks = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM tasks WHERE created_at >= ?`
+  ).bind(dayStartCn).first();
+  return json({ days, today_tasks: tasks ? tasks.n : 0, items: out });
 }
 
 // ===== 工具 =====
