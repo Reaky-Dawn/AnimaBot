@@ -11,6 +11,7 @@
  *                                      maxStageReached, queuePos}    刷新恢复进度（NFR-21）
  *   anima_task_ref     sessionStorage {dataUrl, mime}                 参考图会话暂存（失败重试回填，AC-P0-18）
  *   cookie-consent     localStorage   '1'                             Cookie 同意条一次性（NFR-14）
+ *   anima_device_token localStorage   随机串                          每日 uv 去重（Sprint 16；本机自生成随机数，非设备指纹）
  * 注意：taskToken 属会话级敏感凭证，只存 sessionStorage 不进 localStorage（NFR-07 精神）；
  *       参考图 dataUrl 仅存 sessionStorage（同会话、压缩后小体积），不落 localStorage。
  */
@@ -22,6 +23,7 @@ export const STORAGE_KEYS = {
   RETRY_META: 'anima_retry_meta',
   TASK_REF: 'anima_task_ref',
   COOKIE_CONSENT: 'cookie-consent',
+  DEVICE_TOKEN: 'anima_device_token',
 };
 
 // ===== 通用安全读写 =====
@@ -141,5 +143,21 @@ export function setCookieConsent() {
     localStorage.setItem(STORAGE_KEYS.COOKIE_CONSENT, '1');
   } catch {
     // 静默
+  }
+}
+
+// ===== 每日访客去重 token（Sprint 16） =====
+// 本机随机生成、仅存 localStorage；不读取任何设备/浏览器特征（非指纹），
+// 用于服务端按日去重 uv。隐私模式/存储不可用时返回 null（该次不计 uv，只计 pv）。
+export function getDeviceToken() {
+  try {
+    let t = localStorage.getItem(STORAGE_KEYS.DEVICE_TOKEN);
+    if (!t) {
+      t = crypto.randomUUID();
+      localStorage.setItem(STORAGE_KEYS.DEVICE_TOKEN, t);
+    }
+    return t;
+  } catch {
+    return null;
   }
 }
