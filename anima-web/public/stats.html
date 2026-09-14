@@ -25,6 +25,15 @@
     #chart-wrap { width: 100%; overflow-x: auto; }
     #chart svg { display: block; width: 100%; height: auto; }
     .chart-tip { font-size: var(--font-size-caption); color: var(--text-tertiary); margin-top: var(--space-sm); }
+    .geo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+    .geo-title { font-size: var(--font-size-caption); color: var(--text-secondary); margin-bottom: var(--space-sm); font-weight: 600; }
+    .geo-row { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: 6px; font-size: var(--font-size-caption); }
+    .geo-row__cc { width: 3em; color: var(--text-primary); font-weight: 600; flex-shrink: 0; }
+    .geo-row__bar-wrap { flex: 1; background: rgba(255,255,255,0.06); border-radius: 3px; height: 14px; overflow: hidden; }
+    .geo-row__bar { height: 100%; background: linear-gradient(90deg, #5b7cff, #8a6cf0); border-radius: 3px; }
+    .geo-row--tasks .geo-row__bar { background: linear-gradient(90deg, #59c2e8, #5b7cff); }
+    .geo-row__n { width: 3.5em; text-align: right; color: var(--text-secondary); flex-shrink: 0; }
+    @media (max-width: 767px) { .geo-grid { grid-template-columns: 1fr; } }
     #stats-error { color: var(--text-secondary); text-align: center; padding: var(--space-xl); }
     .range-tabs { display: flex; gap: var(--space-xs); margin-bottom: var(--space-md); }
     .range-tabs button { padding: 4px 14px; font-size: var(--font-size-caption); border-radius: var(--radius-full); border: 1px solid var(--border-divider); background: transparent; color: var(--text-secondary); cursor: pointer; }
@@ -66,6 +75,21 @@
       <div id="chart-wrap"><div id="chart" role="img" aria-label="每日浏览量、独立访客与任务数折线图"></div></div>
       <p class="chart-tip">统计口径：PV=页面打开次数；UV=按浏览器本地随机令牌去重（不含 IP/UA 等个人信息）；任务数=当日提交的生图任务。</p>
     </div>
+
+    <div class="card chart-card">
+      <h2>地域分布（国家级，来自 Cloudflare 边缘）</h2>
+      <div class="geo-grid">
+        <div>
+          <h3 class="geo-title">浏览量分布</h3>
+          <div id="geo-pv" class="geo-list"></div>
+        </div>
+        <div>
+          <h3 class="geo-title">任务分布</h3>
+          <div id="geo-tasks" class="geo-list"></div>
+        </div>
+      </div>
+      <p class="chart-tip">地域只精确到国家/地区码（如 CN、US），由 Cloudflare 在边缘附带提供，站点不记录任何 IP。</p>
+    </div>
     <p id="stats-error" hidden></p>
   </main>
 
@@ -92,20 +116,28 @@
       for (var i = 0; i < n; i++) {
         maxV = Math.max(maxV, data[i].pv, data[i].uv, data[i].tasks);
       }
-      // y 轴刻度取整到好看的数
-      var step = Math.pow(10, Math.floor(Math.log10(maxV)));
-      maxV = Math.ceil(maxV / step) * step;
+      // y 轴刻度：整数好看刻度（步长 ∈ {1,2,2.5,5,10}×10^k 取最小可行），保证 4 段刻度标签恒唯一
+      // （旧算法 maxV=2 时 4 段落出 0/0.5/1/1.5/2，四舍五入后 1 和 2 各出现两次——即"两条 2 的线"）
+      var rawStep = maxV / 4;
+      var mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+      var niceStep = 10 * mag;
+      var candidates = [1, 2, 2.5, 5, 10];
+      for (var ci = 0; ci < candidates.length; ci++) {
+        if (candidates[ci] * mag >= rawStep) { niceStep = candidates[ci] * mag; break; }
+      }
+      maxV = Math.ceil(maxV / niceStep) * niceStep;
       if (maxV <= 1) maxV = 4;
 
       function x(i) { return PAD_L + (n <= 1 ? 0 : (W - PAD_L - PAD_R) * i / (n - 1)); }
       function y(v) { return PAD_T + (H - PAD_T - PAD_B) * (1 - v / maxV); }
 
       var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">';
-      // 网格 + y 轴标签
+      // 网格 + y 轴标签（值 = g*niceStep，整数刻度恒唯一）
       for (var g = 0; g <= 4; g++) {
-        var gy = y(maxV * g / 4);
+        var gv = niceStep * g;
+        var gy = y(gv);
         s += '<line x1="' + PAD_L + '" y1="' + gy + '" x2="' + (W - PAD_R) + '" y2="' + gy + '" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>';
-        s += '<text x="' + (PAD_L - 6) + '" y="' + (gy + 4) + '" fill="#6b739b" font-size="10" text-anchor="end">' + Math.round(maxV * g / 4) + '</text>';
+        s += '<text x="' + (PAD_L - 6) + '" y="' + (gy + 4) + '" fill="#6b739b" font-size="10" text-anchor="end">' + (niceStep < 1 ? gv.toFixed(1) : gv) + '</text>';
       }
       // x 轴日期（按点数抽稀：最多 10 个标签）
       var labelEvery = Math.max(1, Math.ceil(n / 10));
@@ -134,6 +166,29 @@
       document.getElementById('chart').innerHTML = s;
     }
 
+    /** 地域分布条形（数组 [code,n] 降序） */
+    function renderGeo(elId, arr) {
+      var el = document.getElementById(elId);
+      var total = 0;
+      for (var i = 0; i < arr.length; i++) total += arr[i][1];
+      if (!arr.length || !total) {
+        el.innerHTML = '<p class="chart-tip">暂无数据</p>';
+        return;
+      }
+      var maxN = arr[0][1];
+      var html = '';
+      for (var i = 0; i < Math.min(arr.length, 10); i++) {
+        var cc = arr[i][0], n = arr[i][1];
+        var pct = Math.round(n / maxN * 100);
+        html += '<div class="geo-row' + (elId === 'geo-tasks' ? ' geo-row--tasks' : '') + '">'
+          + '<span class="geo-row__cc">' + cc + '</span>'
+          + '<span class="geo-row__bar-wrap"><span class="geo-row__bar" style="width:' + pct + '%"></span></span>'
+          + '<span class="geo-row__n">' + n + '（' + Math.round(n / total * 100) + '%）</span>'
+          + '</div>';
+      }
+      el.innerHTML = html;
+    }
+
     function load() {
       var errEl = document.getElementById('stats-error');
       fetch('/api/stats/summary?days=' + state.days)
@@ -144,6 +199,8 @@
           document.getElementById('kpi-uv').textContent = fmt(d.totals.uv);
           document.getElementById('kpi-tasks').textContent = fmt(d.totals.tasks);
           renderChart(d.items);
+          renderGeo('geo-pv', d.geo || []);
+          renderGeo('geo-tasks', d.task_geo || []);
         })
         .catch(function (e) {
           errEl.hidden = false;
