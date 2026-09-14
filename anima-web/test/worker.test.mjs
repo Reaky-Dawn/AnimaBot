@@ -413,4 +413,25 @@ describe('每日流量统计（Sprint 16）', () => {
     const s = await api(env, '/api/stats/summary?days=1');
     assert.equal(s.json.today_tasks, 1);
   });
+
+  test('地域统计：hit 按 CF_IPCOUNTRY 计数聚合，XX 丢弃，T1→TOR（Sprint 16.1）', async () => {
+    const env = makeEnv();
+    // Node fetch 无真实 CF 边缘，测试直接注入 CF_IPCOUNTRY 头（与 Worker 内读取名一致）
+    await api(env, '/api/stats/hit', { method: 'POST', headers: { 'CF_IPCOUNTRY': 'CN' }, body: { d: 'geo-A', p: 'index' } });
+    await api(env, '/api/stats/hit', { method: 'POST', headers: { 'CF_IPCOUNTRY': 'CN' }, body: { d: 'geo-B', p: 'index' } });
+    await api(env, '/api/stats/hit', { method: 'POST', headers: { 'CF_IPCOUNTRY': 'JP' }, body: { d: 'geo-C', p: 'index' } });
+    await api(env, '/api/stats/hit', { method: 'POST', headers: { 'CF_IPCOUNTRY': 'XX' }, body: {} }); // 未知码不计
+    await api(env, '/api/stats/hit', { method: 'POST', headers: { 'CF_IPCOUNTRY': 'T1' }, body: {} }); // Tor 归 TOR
+
+    const s = await api(env, '/api/stats/summary?days=1');
+    const geoMap = Object.fromEntries(s.json.geo);
+    assert.equal(geoMap.CN, 2);
+    assert.equal(geoMap.JP, 1);
+    assert.equal(geoMap.TOR, 1);
+    assert.equal(geoMap.XX, undefined);
+    // 降序：CN(2) 在前
+    assert.deepEqual(s.json.geo.map((g) => g[0])[0], 'CN');
+    // 任务 geo：测试环境 createTask 走 mock D1 + 无 waitUntil + 无 CF 头 → 结构存在但为空
+    assert.deepEqual(s.json.task_geo, []);
+  });
 });
