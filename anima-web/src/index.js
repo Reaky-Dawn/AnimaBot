@@ -211,7 +211,7 @@ export default {
     // 3) 统计键保险清扫（KV 有 90 天 TTL 兜底；此处清理潜在孤儿键——每周一跑一次即可，其余跳过）
     if (new Date(now + 8 * 3600 * 1000).getUTCDay() === 1) {
       const lists = [];
-      for (const prefix of ['stats/', 'uv/', 'tasks/']) {
+      for (const prefix of ['stats/', 'uv/', 'tasks/', 'geo/', 'tgeo/']) {
         const l = await env.ANIMA_KV.list({ prefix });
         lists.push(...l.keys);
       }
@@ -332,7 +332,12 @@ async function createTask(request, env, ctx) {
     : undefined;
 
   // 每日任务数累计（Sprint 16：D1 任务即用即删，历史日靠此 KV 计数支撑统计折线）
-  if (ctx?.waitUntil) ctx.waitUntil(bumpDailyTaskCount(env, now));
+  // Sprint 16.1：同时按地域累计（tgeo/{date}，CF_IPCOUNTRY）——广告收益看「哪个地区产生生成行为」
+  const country = normalizeCountry(request.headers.get('CF_IPCOUNTRY') || request.cf?.country);
+  if (ctx?.waitUntil) {
+    ctx.waitUntil(bumpDailyTaskCount(env, now));
+    if (country) ctx.waitUntil(bumpDailyGeoCount(env, now, country));
+  }
 
   // 唤醒引擎（引擎死 → dispatch 重启；防抖 120s；无 GH_WAKE_TOKEN 时跳过）
   // 带参考图的任务此刻还是 ref_pending（非 queued），Actions 会空跑——等上传完入队时再唤醒
@@ -352,6 +357,21 @@ async function bumpDailyTaskCount(env, now) {
     await env.ANIMA_KV.put(key, JSON.stringify({ n }), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
   } catch (e) {
     console.log('[anima] daily task count error:', e && e.message);
+  }
+}
+
+/** 每日任务地域计数 +1（KV tgeo/{date}；Sprint 16.1） */
+async function bumpDailyGeoCount(env, now, country) {
+  try {
+    const key = `tgeo/${statsDate(now)}`;
+    const raw = await env.ANIMA_KV.get(key);
+    let geo;
+    try { geo = raw ? JSON.parse(raw) : null; } catch { geo = null; }
+    if (!geo || typeof geo !== 'object') geo = {};
+    geo[country] = (geo[country] || 0) + 1;
+    await env.ANIMA_KV.put(key, JSON.stringify(geo), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+  } catch (e) {
+    console.log('[anima] daily task geo error:', e && e.message);
   }
 }
 
@@ -629,13 +649,17 @@ function statsDate(now = Date.now()) {
  * 隐私模型（web-compliance 对齐）：不收集 IP/UA/Referer/指纹；
  * device token 是浏览器 localStorage 里自生成的随机 UUID，服务端只存其 SHA-256 摘要
  * （即使 KV 泄露也无法反推/关联用户），且仅当日可见、按日分键、90 天自动清理。
+ * 地域（Sprint 16.1）：只取 Cloudflare 边缘自带的 CF_IPCOUNTRY（国家级 ISO 两字码，
+ * 平台免费提供，非 IP 解析，不落原始 IP）。
  * PV：KV stats/{date} JSON 计数器（读改写；秒级并发竞态误差可接受——小流量场景）。
  * UV：KV uv/{date} 存摘要集合（JSON 数组；同日同 token 只计 1）。
+ * 地域：KV geo/{date} 计数器 {CC: n}。
  */
 async function recordStatsHit(request, env) {
   const body = await request.json().catch(() => ({}));
   const page = body.p === 'result' ? 'result' : 'index';
   const date = statsDate();
+  const country = normalizeCountry(request.headers.get('CF_IPCOUNTRY') || request.cf?.country);
 
   // ---- PV（读写竞态容忍：≤ 并发数误差，小流量无碍；D1 无这类高频小计数需求） ----
   const pvKey = `stats/${date}`;
@@ -663,7 +687,26 @@ async function recordStatsHit(request, env) {
     }
   }
 
+  // ---- 地域（Sprint 16.1：国家级计数，CF_IPCOUNTRY） ----
+  if (country) {
+    const geoKey = `geo/${date}`;
+    const geoRaw = await env.ANIMA_KV.get(geoKey);
+    let geo;
+    try { geo = geoRaw ? JSON.parse(geoRaw) : null; } catch { geo = null; }
+    if (!geo || typeof geo !== 'object') geo = {};
+    geo[country] = (geo[country] || 0) + 1;
+    await env.ANIMA_KV.put(geoKey, JSON.stringify(geo), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+  }
+
   return json({ ok: true, uv: uvAdded });
+}
+
+/** 国家码规范化：两字大写 ISO 码；T1（Tor 出口）与 XX/未知归并规则；空返回空（不计入） */
+function normalizeCountry(raw) {
+  const c = String(raw || '').trim().toUpperCase();
+  if (!c || c === 'XX') return '';
+  if (c === 'T1') return 'TOR';
+  return c;
 }
 
 /**
@@ -675,6 +718,8 @@ async function statsSummary(env, url) {
   const days = Math.min(Math.max(Number.isFinite(parsed) ? parsed : 30, 1), STATS_RETENTION_DAYS);
   const out = [];
   const uniqueTokens = new Set(); // 跨日 UV 并集（同一摘要只算一次）
+  const pvGeoAgg = {};            // 区间 PV 地域聚合 {CC: n}
+  const taskGeoAgg = {};          // 区间任务地域聚合 {CC: n}
   let totalPv = 0, totalTasks = 0;
   // 当日任务数（D1 现算；自然日按北京时间切。D1 任务即用即删，历史日只认 KV 累计）
   const dayStartCn = new Date(statsDate() + 'T00:00:00+08:00').getTime();
@@ -687,10 +732,14 @@ async function statsSummary(env, url) {
     const pvRaw = await env.ANIMA_KV.get(`stats/${date}`);
     const uvRaw = await env.ANIMA_KV.get(`uv/${date}`);
     const tkRaw = await env.ANIMA_KV.get(`tasks/${date}`);
-    let c = null, uv = null, tk = null;
+    const geoRaw = await env.ANIMA_KV.get(`geo/${date}`);
+    const tgeoRaw = await env.ANIMA_KV.get(`tgeo/${date}`);
+    let c = null, uv = null, tk = null, geo = null, tgeo = null;
     try { c = pvRaw ? JSON.parse(pvRaw) : null; } catch { c = null; }
     try { uv = uvRaw ? JSON.parse(uvRaw) : null; } catch { uv = null; }
     try { tk = tkRaw ? JSON.parse(tkRaw) : null; } catch { tk = null; }
+    try { geo = geoRaw ? JSON.parse(geoRaw) : null; } catch { geo = null; }
+    try { tgeo = tgeoRaw ? JSON.parse(tgeoRaw) : null; } catch { tgeo = null; }
     const pvIndex = c && Number.isFinite(c.pv_index) ? c.pv_index : 0;
     const pvResult = c && Number.isFinite(c.pv_result) ? c.pv_result : 0;
     const dayUvHashes = Array.isArray(uv) ? uv : [];
@@ -701,6 +750,8 @@ async function statsSummary(env, url) {
       : (tk && Number.isFinite(tk.n) ? tk.n : 0);
     totalPv += pvIndex + pvResult;
     totalTasks += dayTasks;
+    for (const cc in (geo || {})) pvGeoAgg[cc] = (pvGeoAgg[cc] || 0) + (geo[cc] || 0);
+    for (const cc in (tgeo || {})) taskGeoAgg[cc] = (taskGeoAgg[cc] || 0) + (tgeo[cc] || 0);
     out.push({
       date,
       pv: pvIndex + pvResult,
@@ -718,8 +769,15 @@ async function statsSummary(env, url) {
       uv: uniqueTokens.size,  // 独立访客（区间内跨日去重并集）
       tasks: totalTasks,      // 总任务数（区间合计；今日含 D1 实时）
     },
+    geo: sortGeo(pvGeoAgg),    // 区间 PV 地域分布（按次数降序）
+    task_geo: sortGeo(taskGeoAgg), // 区间任务地域分布（按次数降序）
     items: out,               // 时间序列（折线数据源；items[0] 为今日，向过去回溯）
   });
+}
+
+/** 地域聚合对象 → [code, n] 降序数组（看板直接渲染条形） */
+function sortGeo(agg) {
+  return Object.entries(agg || {}).sort((a, b) => b[1] - a[1]);
 }
 
 // ===== 工具 =====
