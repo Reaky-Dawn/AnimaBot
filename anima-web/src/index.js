@@ -211,7 +211,7 @@ export default {
     // 3) 统计键保险清扫（KV 有 90 天 TTL 兜底；此处清理潜在孤儿键——每周一跑一次即可，其余跳过）
     if (new Date(now + 8 * 3600 * 1000).getUTCDay() === 1) {
       const lists = [];
-      for (const prefix of ['stats/', 'uv/', 'tasks/', 'geo/', 'tgeo/']) {
+      for (const prefix of ['stats/', 'uv/', 'tasks/', 'geo/', 'tgeo/', 'ref/', 'taskstat/']) {
         const l = await env.ANIMA_KV.list({ prefix });
         lists.push(...l.keys);
       }
@@ -625,6 +625,18 @@ async function handleEngine(request, env, path, url) {
       `UPDATE tasks SET status = ?, stage = ?, result_key = ?, failure_reason = ?, engine_log = ?, updated_at = ? WHERE id = ?`
     ).bind(newStatus, stage, resultKey, failureReason, engineLog, Date.now(), id).run();
 
+    // Sprint 16.2：每日任务终态统计（#1 完成率）——首次进入终态时累计（幂等防重：终态迁移不可逆）
+    if (['done', 'failed', 'rejected'].includes(newStatus) && !['done', 'failed', 'rejected'].includes(task.status)) {
+      const statKey = `taskstat/${statsDate()}`;
+      const raw = await env.ANIMA_KV.get(statKey);
+      let st;
+      try { st = raw ? JSON.parse(raw) : null; } catch { st = null; }
+      if (!st || typeof st !== 'object') st = { done: 0, failed: 0, rejected: 0 };
+      if (newStatus === 'done') st.done += 1; else if (newStatus === 'rejected') st.rejected += 1; else st.failed += 1;
+      // 同日任务总建数也记一份（完成率分母口径：当日建、当日终态；跨日任务在 totals 层校准）
+      await env.ANIMA_KV.put(statKey, JSON.stringify(st), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+    }
+
     return json({ id });
   }
 
@@ -698,7 +710,35 @@ async function recordStatsHit(request, env) {
     await env.ANIMA_KV.put(geoKey, JSON.stringify(geo), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
   }
 
+  // ---- 来源（Sprint 16.2：referrer 只取 hostname 并四归类，不存完整 URL/路径/参数） ----
+  const refClass = classifyReferrer(body.r);
+  if (refClass) {
+    const refKey = `ref/${date}`;
+    const refRaw = await env.ANIMA_KV.get(refKey);
+    let ref;
+    try { ref = refRaw ? JSON.parse(refRaw) : null; } catch { ref = null; }
+    if (!ref || typeof ref !== 'object') ref = {};
+    ref[refClass] = (ref[refClass] || 0) + 1;
+    await env.ANIMA_KV.put(refKey, JSON.stringify(ref), { expirationTtl: (STATS_RETENTION_DAYS + 1) * 86400 });
+  }
+
   return json({ ok: true, uv: uvAdded });
+}
+
+/**
+ * referrer hostname → 四归类（Sprint 16.2）：
+ * direct（无 referrer/空）/ self（本站）/ search（主流搜索引擎域名）/ external（其他站，只记其 hostname）
+ * 只保留分类名（external 另存脱敏后的 hostname，≤64 字符，去掉路径与查询串）。
+ */
+function classifyReferrer(rawRef) {
+  if (!rawRef || typeof rawRef !== 'string') return 'direct';
+  let host = '';
+  try { host = new URL(rawRef).hostname.toLowerCase(); } catch { return 'direct'; }
+  if (!host) return 'direct';
+  try { if (host === new URL('https://animadraw.cloud').hostname) return 'self'; } catch { /* ignore */ }
+  const SEARCH_HOSTS = ['google.', 'bing.', 'baidu.com', 'duckduckgo.', 'sogou.com', 'so.com', 'sm.cn', 'yandex.', 'yahoo.'];
+  if (SEARCH_HOSTS.some((s) => host === s || host.includes(s))) return 'search';
+  return 'ext:' + host.slice(0, 60); // external 单独记域名（不记路径/参数）
 }
 
 /** 国家码规范化：两字大写 ISO 码；T1（Tor 出口）与 XX/未知归并规则；空返回空（不计入） */
@@ -720,6 +760,8 @@ async function statsSummary(env, url) {
   const uniqueTokens = new Set(); // 跨日 UV 并集（同一摘要只算一次）
   const pvGeoAgg = {};            // 区间 PV 地域聚合 {CC: n}
   const taskGeoAgg = {};          // 区间任务地域聚合 {CC: n}
+  const refAgg = {};              // 区间来源聚合（Sprint 16.2 #4）
+  const taskStat = { done: 0, failed: 0, rejected: 0 }; // 区间任务终态聚合（#1）
   let totalPv = 0, totalTasks = 0;
   // 当日任务数（D1 现算；自然日按北京时间切。D1 任务即用即删，历史日只认 KV 累计）
   const dayStartCn = new Date(statsDate() + 'T00:00:00+08:00').getTime();
@@ -734,12 +776,16 @@ async function statsSummary(env, url) {
     const tkRaw = await env.ANIMA_KV.get(`tasks/${date}`);
     const geoRaw = await env.ANIMA_KV.get(`geo/${date}`);
     const tgeoRaw = await env.ANIMA_KV.get(`tgeo/${date}`);
-    let c = null, uv = null, tk = null, geo = null, tgeo = null;
+    const refRaw = await env.ANIMA_KV.get(`ref/${date}`);
+    const tsRaw = await env.ANIMA_KV.get(`taskstat/${date}`);
+    let c = null, uv = null, tk = null, geo = null, tgeo = null, ref = null, ts = null;
     try { c = pvRaw ? JSON.parse(pvRaw) : null; } catch { c = null; }
     try { uv = uvRaw ? JSON.parse(uvRaw) : null; } catch { uv = null; }
     try { tk = tkRaw ? JSON.parse(tkRaw) : null; } catch { tk = null; }
     try { geo = geoRaw ? JSON.parse(geoRaw) : null; } catch { geo = null; }
     try { tgeo = tgeoRaw ? JSON.parse(tgeoRaw) : null; } catch { tgeo = null; }
+    try { ref = refRaw ? JSON.parse(refRaw) : null; } catch { ref = null; }
+    try { ts = tsRaw ? JSON.parse(tsRaw) : null; } catch { ts = null; }
     const pvIndex = c && Number.isFinite(c.pv_index) ? c.pv_index : 0;
     const pvResult = c && Number.isFinite(c.pv_result) ? c.pv_result : 0;
     const dayUvHashes = Array.isArray(uv) ? uv : [];
@@ -752,6 +798,12 @@ async function statsSummary(env, url) {
     totalTasks += dayTasks;
     for (const cc in (geo || {})) pvGeoAgg[cc] = (pvGeoAgg[cc] || 0) + (geo[cc] || 0);
     for (const cc in (tgeo || {})) taskGeoAgg[cc] = (taskGeoAgg[cc] || 0) + (tgeo[cc] || 0);
+    for (const k in (ref || {})) refAgg[k] = (refAgg[k] || 0) + (ref[k] || 0);
+    if (ts) {
+      taskStat.done += Number.isFinite(ts.done) ? ts.done : 0;
+      taskStat.failed += Number.isFinite(ts.failed) ? ts.failed : 0;
+      taskStat.rejected += Number.isFinite(ts.rejected) ? ts.rejected : 0;
+    }
     out.push({
       date,
       pv: pvIndex + pvResult,
@@ -761,6 +813,7 @@ async function statsSummary(env, url) {
       tasks: dayTasks,
     });
   }
+  const finishedTasks = taskStat.done + taskStat.failed + taskStat.rejected;
   return json({
     days,
     today_tasks: todayTasks,
@@ -768,7 +821,13 @@ async function statsSummary(env, url) {
       pv: totalPv,            // 总浏览量（区间合计）
       uv: uniqueTokens.size,  // 独立访客（区间内跨日去重并集）
       tasks: totalTasks,      // 总任务数（区间合计；今日含 D1 实时）
+      // #2 人均任务数：区间任务数 / 独立访客（无访客时为 0）
+      tasks_per_uv: uniqueTokens.size ? Math.round((totalTasks / uniqueTokens.size) * 100) / 100 : 0,
+      // #1 任务完成率：done /（全部进入终态的任务）；rejected 计入分母（被内容闸拦截也是终态）
+      task_done_rate: finishedTasks ? Math.round((taskStat.done / finishedTasks) * 1000) / 10 : null, // 百分位 1 位小数；无终态任务为 null
+      task_terminal: taskStat,   // {done, failed, rejected} 区间合计
     },
+    referrers: sortGeo(refAgg),  // #4 来源分布 [class, n] 降序（direct/self/search/ext:域名）
     geo: sortGeo(pvGeoAgg),    // 区间 PV 地域分布（按次数降序）
     task_geo: sortGeo(taskGeoAgg), // 区间任务地域分布（按次数降序）
     items: out,               // 时间序列（折线数据源；items[0] 为今日，向过去回溯）
