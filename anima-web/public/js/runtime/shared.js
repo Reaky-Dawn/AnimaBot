@@ -36,10 +36,17 @@ export function reportVisit() {
   _visitReported = true;
   try {
     const token = getDeviceToken();
+    // Sprint 16.2 #4：referrer 只送 hostname（服务端再归类 direct/self/search/ext:域名），
+    // 不送路径与查询串——不含任何用户生成内容。
+    const ref = document.referrer ? new URL(document.referrer).origin : '';
     fetch('/api/stats/hit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ d: token, p: location.pathname.startsWith('/result') ? 'result' : 'index' }),
+      body: JSON.stringify({
+        d: token,
+        p: location.pathname.startsWith('/result') ? 'result' : 'index',
+        r: ref || null,
+      }),
       keepalive: true,
     }).catch(() => {}); // 统计失败静默，绝不影响主流程
   } catch (e) { /* 存储不可用（隐私模式）：放弃统计 */ }
