@@ -48,10 +48,42 @@ jobs:
         if: steps.decide.outputs.restart == 'true'
         run: python3 -m pip install --quiet kaggle
 
-      - name: 推送 notebook 重启引擎
+      - name: 推送 notebook 重启引擎（账号池轮换，Sprint 17）
         if: steps.decide.outputs.restart == 'true'
         env:
+          KAGGLE_ACCOUNTS: ${{ secrets.KAGGLE_ACCOUNTS }}
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
-          kaggle kernels push -p kaggle-notebook/
-          echo "已提交 kernels push，引擎重启中…"
+          # 账号池：逐个尝试 push，成功即停；全失败退出非零（下轮 cron 再试）。
+          # KAGGLE_ACCOUNTS = [{"user":"reagino","token":"KGAT_.."},{"user":"reagino2","token":"KGAT_.."}]
+          # 未配置时回退单账号 KAGGLE_API_TOKEN（兼容旧部署）。新账号只需在 secret 里追加元素。
+          python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+
+          raw = os.environ.get("KAGGLE_ACCOUNTS", "").strip()
+          accounts = []
+          if raw:
+              try:
+                  arr = json.loads(raw)
+                  accounts = [{"user": a.get("user", ""), "token": a.get("token", "")}
+                              for a in arr if isinstance(a, dict) and a.get("token")]
+              except Exception as e:
+                  print("KAGGLE_ACCOUNTS 解析失败，回退单账号:", e)
+          if not accounts and os.environ.get("KAGGLE_API_TOKEN"):
+              accounts = [{"user": "", "token": os.environ["KAGGLE_API_TOKEN"]}]
+
+          if not accounts:
+              print("未配置任何 Kaggle 账号"); sys.exit(1)
+
+          for i, acct in enumerate(accounts):
+              label = acct["user"] or ("account%d" % (i + 1))
+              print("== 尝试账号 %s ==" % label)
+              env = dict(os.environ, KAGGLE_API_TOKEN=acct["token"])
+              r = subprocess.run(["kaggle", "kernels", "push", "-p", "kaggle-notebook/"],
+                                 env=env, capture_output=True, text=True)
+              print((r.stdout or "").strip()[-300:])
+              if r.returncode == 0 and "successfully pushed" in (r.stdout or ""):
+                  print("账号 %s push 成功" % label); sys.exit(0)
+              print("账号 %s push 失败 rc=%s %s" % (label, r.returncode, (r.stderr or "")[-200:]))
+          print("所有账号均失败"); sys.exit(1)
+          PYEOF
