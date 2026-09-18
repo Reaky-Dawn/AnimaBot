@@ -155,7 +155,17 @@ function makeEnv() {
 
 const BASE = 'http://localhost';
 
-async function api(env, path, opts = {}) {
+/** 带可 flush 的 waitUntil ctx（唤醒等后台任务在断言前手动跑完） */
+function makeCtx() {
+  const tasks = [];
+  return {
+    tasks,
+    waitUntil: (p) => tasks.push(Promise.resolve(p).catch(() => {})),
+    async flush() { await Promise.all(tasks); },
+  };
+}
+
+async function api(env, path, opts = {}, ctx = null) {
   const headers = { ...(opts.headers || {}) };
   let body = opts.body;
   if (body && typeof body === 'object' && !(body instanceof Uint8Array)) {
@@ -163,7 +173,7 @@ async function api(env, path, opts = {}) {
     headers['Content-Type'] = 'application/json';
   }
   const req = new Request(BASE + path, { method: opts.method || 'GET', headers, body });
-  const res = await worker.fetch(req, env, {});
+  const res = await worker.fetch(req, env, ctx || {});
   let json = null;
   try { json = await res.clone().json(); } catch { /* 非JSON（图片字节） */ }
   return { status: res.status, json, res };
@@ -477,5 +487,88 @@ describe('每日流量统计（Sprint 16）', () => {
     assert.equal(s.json.totals.task_done_rate, 66.7); // 2/3
     // 人均：3 任务 / 2 UV = 1.5
     assert.equal(s.json.totals.tasks_per_uv, 1.5);
+  });
+});
+
+describe('Kaggle 账号池唤醒（Sprint 17）', () => {
+  // fetch mock：按 Authorization 头里的 token 决定成败
+  function mockFetch(script) {
+    const calls = [];
+    const orig = global.fetch;
+    global.fetch = async (url, opts = {}) => {
+      const auth = opts.headers?.Authorization || '';
+      calls.push({ url: String(url), token: auth.replace('Bearer ', '').slice(0, 12), body: opts.body ? JSON.parse(opts.body) : null });
+      const behavior = script(calls.length, auth);
+      return new Response(behavior.body, { status: behavior.status });
+    };
+    return { calls, restore: () => { global.fetch = orig; } };
+  }
+
+  test('主账号成功 → 指针不动；主账号失败 → 切下一账号且指针挪动', async () => {
+    const env = makeEnv();
+    env.KAGGLE_ACCOUNTS = JSON.stringify([
+      { user: 'reagino', token: 'KGAT_AAAA' },
+      { user: 'reagino2', token: 'KGAT_BBBB' },
+    ]);
+    // 第 1 次唤醒：主账号成功
+    let m = mockFetch(() => ({ status: 200, body: '{"ref":"reagino/animabot-engine","version_number":1}' }));
+    try {
+      const ctx = makeCtx();
+      await api(env, '/api/tasks', { method: 'POST', headers: { 'CF-Connecting-IP': '30.1.1.1' }, body: { prompt: 'wake1' } }, ctx);
+      await ctx.flush();
+      assert.equal(env.ANIMA_KV._map.get('wake/kgIdx'), undefined); // 指针未动
+      assert.match(m.calls[0].body.slug, /^reagino\/animabot-engine$/);
+      assert.equal(m.calls[0].token, 'KGAT_AAAA'.slice(0, 12));
+
+      // 第 2 次唤醒：主账号配额耗尽（403）→ 切 reagino2 成功，指针挪到 1
+      env.ANIMA_KV._map.delete('wake/last'); // 解除防抖
+      m.restore();
+      m = mockFetch((n, auth) => auth.includes('KGAT_AAAA')
+        ? { status: 403, body: '{"error":"quota exceeded"}' }
+        : { status: 200, body: '{"ref":"reagino2/animabot-engine","version_number":1}' });
+      const ctx2 = makeCtx();
+      await api(env, '/api/tasks', { method: 'POST', headers: { 'CF-Connecting-IP': '30.1.1.2' }, body: { prompt: 'wake2' } }, ctx2);
+      await ctx2.flush();
+      assert.equal(env.ANIMA_KV._map.get('wake/kgIdx'), '1'); // 指针已切到账号 2
+      const okCall = m.calls.find((c) => c.token === 'KGAT_BBBB'.slice(0, 12));
+      assert.ok(okCall, '应尝试 reagino2');
+      assert.match(okCall.body.slug, /^reagino2\/animabot-engine$/);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test('全账号失败 → 落 GitHub dispatch 兜底（不误报成功）', async () => {
+    const env = makeEnv();
+    env.KAGGLE_ACCOUNTS = JSON.stringify([{ user: 'reagino', token: 'KGAT_AAAA' }]);
+    env.GH_WAKE_TOKEN = 'gh-token';
+    const m = mockFetch((n, auth) => {
+      if (auth.includes('KGAT_')) return { status: 403, body: '{"error":"quota"}' };
+      return { status: 204, body: '' }; // github dispatch 204
+    });
+    try {
+      const ctx = makeCtx();
+      await api(env, '/api/tasks', { method: 'POST', headers: { 'CF-Connecting-IP': '30.2.2.2' }, body: { prompt: 'wake3' } }, ctx);
+      await ctx.flush();
+      const ghCall = m.calls.find((c) => c.url.includes('github.com'));
+      assert.ok(ghCall, '应落 GitHub dispatch 兜底');
+    } finally {
+      m.restore();
+    }
+  });
+
+  test('旧单账号 secret 兼容（KAGGLE_API_TOKEN 包装成 1 元素池）', async () => {
+    const env = makeEnv();
+    env.KAGGLE_API_TOKEN = 'KGAT_OLD';
+    const m = mockFetch(() => ({ status: 200, body: '{"ref":"reagino/animabot-engine"}' }));
+    try {
+      const ctx = makeCtx();
+      await api(env, '/api/tasks', { method: 'POST', headers: { 'CF-Connecting-IP': '30.3.3.3' }, body: { prompt: 'wake4' } }, ctx);
+      await ctx.flush();
+      assert.equal(m.calls.length, 1);
+      assert.equal(m.calls[0].token, 'KGAT_OLD'.slice(0, 12));
+    } finally {
+      m.restore();
+    }
   });
 });
