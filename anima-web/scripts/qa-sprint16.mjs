@@ -48,7 +48,16 @@ const server = http.createServer((req, res) => {
       items.push({ date: d, pv: 5 + ((i * 7) % 11), pv_index: 3, pv_result: 2, uv: 2 + (i % 4), tasks: i % 3 });
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ days, today_tasks: 3, totals: { pv: items.reduce((a, b) => a + b.pv, 0), uv: 9, tasks: items.reduce((a, b) => a + b.tasks, 0) }, items }));
+    res.end(JSON.stringify({
+      days, today_tasks: 3,
+      totals: {
+        pv: items.reduce((a, b) => a + b.pv, 0), uv: 9, tasks: items.reduce((a, b) => a + b.tasks, 0),
+        tasks_per_uv: 3.33, task_done_rate: 92.3, task_terminal: { done: 12, failed: 1, rejected: 0 },
+      },
+      referrers: [['direct', 18], ['self', 6], ['search', 3], ['ext:example.com', 2]],
+      geo: [['CN', 12], ['JP', 3]], task_geo: [['CN', 4]],
+      items,
+    }));
     return;
   }
   let p = u.pathname === '/' ? '/index.html' : u.pathname;
@@ -113,12 +122,18 @@ try {
     pv: document.getElementById('kpi-pv')?.textContent,
     uv: document.getElementById('kpi-uv')?.textContent,
     tasks: document.getElementById('kpi-tasks')?.textContent,
+    tpu: document.getElementById('kpi-tpu')?.textContent,
+    rate: document.getElementById('kpi-rate')?.textContent,
+    src: document.getElementById('kpi-src')?.textContent,
     svgPaths: document.querySelectorAll('#chart svg path').length,
+    refRows: document.querySelectorAll('#ref-list .geo-row').length,
     err: !document.getElementById('stats-error')?.hidden,
   }));
   console.log('stats page:', JSON.stringify(statsState));
   if (statsState.svgPaths < 3) failures.push('stats.html 折线未渲染（path<3）');
   if (statsState.pv === '–' || statsState.uv === '–' || statsState.tasks === '–') failures.push('stats.html KPI 未填充');
+  if (statsState.tpu !== '3.33' || statsState.rate !== '92.3%' || statsState.src !== '直接访问') failures.push('stats.html 新 KPI（人均/完成率/来源）异常: ' + JSON.stringify(statsState));
+  if (statsState.refRows < 3) failures.push('stats.html 来源分布未渲染');
   if (statsState.err) failures.push('stats.html 显示错误态');
   if (sErrors.length) failures.push(`stats.html errors: ${sErrors.slice(0, 2).join('|')}`);
 
