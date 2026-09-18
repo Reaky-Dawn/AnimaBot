@@ -58,6 +58,9 @@
       <div class="card stat-card"><div class="stat-card__value" id="kpi-pv">–</div><div class="stat-card__label">总浏览量（PV）</div></div>
       <div class="card stat-card"><div class="stat-card__value" id="kpi-uv">–</div><div class="stat-card__label">独立访客（UV，区间去重）</div></div>
       <div class="card stat-card"><div class="stat-card__value" id="kpi-tasks">–</div><div class="stat-card__label">生成任务数</div></div>
+      <div class="card stat-card"><div class="stat-card__value" id="kpi-tpu">–</div><div class="stat-card__label">人均任务数</div></div>
+      <div class="card stat-card"><div class="stat-card__value" id="kpi-rate">–</div><div class="stat-card__label">任务完成率</div></div>
+      <div class="card stat-card"><div class="stat-card__value" id="kpi-src">–</div><div class="stat-card__label">主要来源</div></div>
     </div>
 
     <div class="card chart-card">
@@ -90,6 +93,12 @@
       </div>
       <p class="chart-tip">地域只精确到国家/地区码（如 CN、US），由 Cloudflare 在边缘附带提供，站点不记录任何 IP。</p>
     </div>
+
+    <div class="card chart-card">
+      <h2>来源分布（referrer 只按域名归类）</h2>
+      <div id="ref-list" class="geo-list"></div>
+      <p class="chart-tip">direct=直接打开/无来源；self=本站页面间跳转；search=搜索引擎；ext:xxx=外部站点（只记域名）。不记录任何完整 URL 或路径。</p>
+    </div>
     <p id="stats-error" hidden></p>
   </main>
 
@@ -106,6 +115,8 @@
     var state = { days: 30 };
 
     function fmt(n) { return (typeof n === 'number' ? n : 0).toLocaleString('zh-CN'); }
+
+    var REF_LABEL = { 'direct': '直接访问', 'self': '本站互跳', 'search': '搜索引擎' };
 
     function renderChart(items) {
       // items: 时间倒序（[0]=今日）→ 转正序画折线
@@ -198,9 +209,17 @@
           document.getElementById('kpi-pv').textContent = fmt(d.totals.pv);
           document.getElementById('kpi-uv').textContent = fmt(d.totals.uv);
           document.getElementById('kpi-tasks').textContent = fmt(d.totals.tasks);
+          document.getElementById('kpi-tpu').textContent = fmt(d.totals.tasks_per_uv);
+          var rate = d.totals.task_done_rate;
+          document.getElementById('kpi-rate').textContent = rate == null ? '–' : rate + '%';
+          var refs = d.referrers || [];
+          var mainSrc = refs.length ? refs[0][0] : '–';
+          if (mainSrc.indexOf('ext:') === 0) mainSrc = mainSrc.slice(4);
+          document.getElementById('kpi-src').textContent = REF_LABEL[mainSrc] || mainSrc;
           renderChart(d.items);
           renderGeo('geo-pv', d.geo || []);
           renderGeo('geo-tasks', d.task_geo || []);
+          renderGeo('ref-list', refs);
         })
         .catch(function (e) {
           errEl.hidden = false;
