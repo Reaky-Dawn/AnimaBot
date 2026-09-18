@@ -52,54 +52,92 @@ const WAKE_GUARD_MS = 120000;
 import KAGGLE_NOTEBOOK_TEXT from './kaggle-notebook-inline.js';
 
 /**
- * 唤醒引擎（Sprint 15：Kaggle 直推优先，GitHub Actions 兜底）。
+ * Kaggle 账号池（Sprint 17：多账号配额轮换，为后续新账号预留）。
  *
- * 直推：Worker 持 KAGGLE_API_TOKEN secret 直接 POST /api/v1/kernels/push，
- * 省掉「Actions runner 冷启动 + pip install kaggle + checkout」的 1-1.5 分钟中转。
- * 兜底：直推缺 token/抛错时回退原 workflow_dispatch 路径（行为与 v17 前一致）。
+ * 配置优先级：
+ *   1) env.KAGGLE_ACCOUNTS —— JSON 数组 [{"user":"reagino","token":"KGAT_..."}, ...]
+ *   2) env.KAGGLE_API_TOKEN —— 旧单账号（兼容，包装成 1 元素池）
+ *
+ * 轮换策略（KV wake/kgIdx 记录当前指针）：
+ *   - 唤醒成功 → 指针不动（继续用当前账号，直到它失败）
+ *   - 当前账号 push 失败（403 配额耗尽/401 token 失效等）→ 指针 +1 试下一个，全失败才落 GitHub 兜底
+ *   - 新账号接入：只需在 KAGGLE_ACCOUNTS 里追加 {"user","token"}，零代码改动
+ */
+function kaggleAccounts(env) {
+  if (env.KAGGLE_ACCOUNTS) {
+    try {
+      const arr = JSON.parse(env.KAGGLE_ACCOUNTS);
+      if (Array.isArray(arr)) {
+        const valid = arr.filter((a) => a && a.token);
+        if (valid.length) return valid;
+      }
+    } catch { /* JSON 坏 → 落旧配置 */ }
+  }
+  if (env.KAGGLE_API_TOKEN) return [{ user: env.KAGGLE_USER || 'primary', token: env.KAGGLE_API_TOKEN }];
+  return [];
+}
+
+/** 读当前账号指针（KV；坏值回 0） */
+async function kaggleIdxGet(env, n) {
+  const raw = await env.ANIMA_KV.get('wake/kgIdx');
+  let i = Number.parseInt(raw || '0', 10);
+  if (!Number.isFinite(i) || i < 0 || i >= n) i = 0;
+  return i;
+}
+
+/**
+ * 唤醒引擎（Sprint 15 直推优先 + Sprint 17 账号池轮换，GitHub Actions 兜底）。
  * 防抖共用 wake/last（同 120s 只发一次）。
  */
 async function dispatchEngineWake(env) {
   const last = await env.ANIMA_KV.get('wake/last');
   if (last && Date.now() - Number(last) < WAKE_GUARD_MS) return;
 
-  // ---- 直推 Kaggle ----
-  const kgat = env.KAGGLE_API_TOKEN;
-  if (kgat) {
-    try {
-      const meta = {
-        slug: 'reagino/animabot-engine',
-        new_title: 'AnimaBot Engine',
-        text: KAGGLE_NOTEBOOK_TEXT,
-        language: 'python',
-        kernel_type: 'notebook',
-        is_private: true,
-        enable_gpu: true,
-        enable_internet: true,
-        dataset_data_sources: ['reagino/animamodel', 'reagino/animabot-secrets', 'reagino/comfyui-cache'],
-        kernel_data_sources: [],
-        competition_data_sources: [],
-        category_ids: [],
-      };
-      const resp = await fetch('https://www.kaggle.com/api/v1/kernels/push', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${kgat}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'anima-web-worker',
-        },
-        body: JSON.stringify(meta),
-      });
-      const bodyText = await resp.text();
-      if (resp.status === 200 && !/"error"\s*:\s*"[^"]+"/.test(bodyText)) {
-        await env.ANIMA_KV.put('wake/last', String(Date.now()));
-        console.log('[anima] engine wake: kaggle push ok:', bodyText.slice(0, 200));
-        return;
+  // ---- 直推 Kaggle（账号池轮换） ----
+  const accounts = kaggleAccounts(env);
+  if (accounts.length) {
+    const startIdx = await kaggleIdxGet(env, accounts.length);
+    for (let off = 0; off < accounts.length; off++) {
+      const idx = (startIdx + off) % accounts.length;
+      const acct = accounts[idx];
+      try {
+        const meta = {
+          slug: `${acct.user}/animabot-engine`,
+          new_title: 'AnimaBot Engine',
+          text: KAGGLE_NOTEBOOK_TEXT,
+          language: 'python',
+          kernel_type: 'notebook',
+          is_private: true,
+          enable_gpu: true,
+          enable_internet: true,
+          dataset_data_sources: ['reagino/animamodel', 'reagino/animabot-secrets', 'reagino/comfyui-cache'],
+          kernel_data_sources: [],
+          competition_data_sources: [],
+          category_ids: [],
+        };
+        const resp = await fetch('https://www.kaggle.com/api/v1/kernels/push', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${acct.token}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'anima-web-worker',
+          },
+          body: JSON.stringify(meta),
+        });
+        const bodyText = await resp.text();
+        if (resp.status === 200 && !/"error"\s*:\s*"[^"]+"/.test(bodyText)) {
+          await env.ANIMA_KV.put('wake/last', String(Date.now()));
+          if (idx !== startIdx) await env.ANIMA_KV.put('wake/kgIdx', String(idx)); // 切换成功才挪指针
+          console.log(`[anima] engine wake: kaggle push ok (${acct.user}):`, bodyText.slice(0, 200));
+          return;
+        }
+        console.log(`[anima] engine wake: kaggle push rejected (${acct.user}): ${resp.status} ${bodyText.slice(0, 200)}`);
+      } catch (e) {
+        console.log(`[anima] engine wake: kaggle push error (${acct.user}):`, e && e.message);
       }
-      console.log(`[anima] engine wake: kaggle push rejected: ${resp.status} ${bodyText.slice(0, 300)}`);
-    } catch (e) {
-      console.log('[anima] engine wake: kaggle push error:', e && e.message);
+      // 当前账号失败 → 循环自然试下一个（off+1）
     }
+    console.log('[anima] engine wake: all kaggle accounts failed, falling back to GitHub dispatch');
   }
 
   // ---- 兜底：GitHub Actions dispatch ----
