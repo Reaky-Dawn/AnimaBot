@@ -99,11 +99,12 @@ function makeDb() {
     }
     if (/SELECT \* FROM tasks WHERE id = \? AND task_token = \?/i.test(s)) {
       const row = rows.find((r) => r.id === args[0] && r.task_token === args[1]);
-      return { results: row ? [row] : [], meta: {} };
+      // 返回浅拷贝：模拟真实 D1 快照语义（row 引用会被后续 UPDATE 原地改，污染调用方已持有的旧值）
+      return { results: row ? [{ ...row }] : [], meta: {} };
     }
     if (/SELECT \* FROM tasks WHERE id = \?/i.test(s)) {
       const row = rows.find((r) => r.id === args[0]);
-      return { results: row ? [row] : [], meta: {} };
+      return { results: row ? [{ ...row }] : [], meta: {} };
     }
     if (/DELETE FROM tasks WHERE id = \?/i.test(s)) {
       const i = rows.findIndex((r) => r.id === args[0]);
@@ -433,5 +434,48 @@ describe('每日流量统计（Sprint 16）', () => {
     assert.deepEqual(s.json.geo.map((g) => g[0])[0], 'CN');
     // 任务 geo：测试环境 createTask 走 mock D1 + 无 waitUntil + 无 CF 头 → 结构存在但为空
     assert.deepEqual(s.json.task_geo, []);
+  });
+
+  test('来源统计：referrer 四归类（Sprint 16.2 #4）', async () => {
+    const env = makeEnv();
+    const hit = (r) => api(env, '/api/stats/hit', { method: 'POST', body: { d: 'ref-' + Math.random(), r } });
+    await hit(null);                                                    // direct
+    await hit('');                                                      // direct
+    await hit('https://animadraw.cloud/result.html?id=x');              // self（host 匹配）
+    await hit('https://www.google.com/search?q=anime');                 // search
+    await hit('https://tieba.baidu.com/p/12345');                       // search（baidu.com）
+    await hit('https://someforum.example.com/thread/1?utm=x');          // ext:someforum.example.com
+
+    const s = await api(env, '/api/stats/summary?days=1');
+    const refMap = Object.fromEntries(s.json.referrers);
+    assert.equal(refMap['direct'], 2);
+    assert.equal(refMap['self'], 1);
+    assert.equal(refMap['search'], 2);
+    assert.equal(refMap['ext:someforum.example.com'], 1);
+  });
+
+  test('任务完成率与人均任务数（Sprint 16.2 #1/#2）', async () => {
+    const env = makeEnv();
+    const H = { Authorization: 'Bearer test-engine-key' };
+    // 3 任务：2 done + 1 failed；两个不同 UV token 打点
+    const t1 = await createTask(env, 'a', '20.1.1.1');
+    const t2 = await createTask(env, 'b', '20.1.1.2');
+    const t3 = await createTask(env, 'c', '20.1.1.3');
+    for (const t of [t1, t2, t3]) {
+      await api(env, `/api/engine/tasks/${t.id}`, { method: 'PATCH', headers: H, body: { status: 'prompting' } });
+      await api(env, `/api/engine/tasks/${t.id}`, { method: 'PATCH', headers: H, body: { status: 'drawing' } });
+    }
+    await api(env, `/api/engine/tasks/${t1.id}`, { method: 'PATCH', headers: H, body: { status: 'done' } });
+    await api(env, `/api/engine/tasks/${t2.id}`, { method: 'PATCH', headers: H, body: { status: 'done' } });
+    await api(env, `/api/engine/tasks/${t3.id}`, { method: 'PATCH', headers: H, body: { status: 'failed', failure_reason: 'draw_failed' } });
+    // 终态幂等：重复 PATCH done 不得重复计数（forward-only 会拒绝，这里验证 rejected 首次计数后不再变）
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'uv-1' } });
+    await api(env, '/api/stats/hit', { method: 'POST', body: { d: 'uv-2' } });
+
+    const s = await api(env, '/api/stats/summary?days=1');
+    assert.deepEqual(s.json.totals.task_terminal, { done: 2, failed: 1, rejected: 0 });
+    assert.equal(s.json.totals.task_done_rate, 66.7); // 2/3
+    // 人均：3 任务 / 2 UV = 1.5
+    assert.equal(s.json.totals.tasks_per_uv, 1.5);
   });
 });
