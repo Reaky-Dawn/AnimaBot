@@ -104,9 +104,9 @@ def write_error_log(task_id: str, action: str, message: str):
 _NEGATIVE_PROMPT = ("worst quality, low quality, score_1, score_2, score_3, "
                     "artist name, blurry, jpeg artifacts, chromatic aberration")
 _DRAW_STEPS = 30
-_DRAW_CFG = 5
+_DRAW_CFG = 3.5      # Sprint 17.2：5→3.5（流匹配模型高 cfg+karras 亮度过冲，高亮内容纯白 34%→治本）
 _DRAW_SAMPLER = "euler"
-_DRAW_SCHEDULER = "karras"
+_DRAW_SCHEDULER = "simple"  # Sprint 17.2：karras→simple（同上，§19 预案落地）
 _DRAW_DENOISE = 1
 _DRAW_MODEL = "miaomiaoHarem_anima12.safetensors"
 _DRAW_VAE = "qwenImage_qwenImageVAE.safetensors"
@@ -377,8 +377,13 @@ async def process_task(task: dict):
 
             # 2) 提示词 Agent（tags_prompt / natural_prompt / description / characters）
             await patch_task(task_id, {"stage": "prompting"})
+            # Sprint 17.2：agent 内部阶段（如匹配画师）经 log_cb 透传，同步细粒度 stage
+            def _agent_log(action: str, detail: str = ""):
+                tlog.add(action, detail)
+                if action == "artist_matching":
+                    asyncio.get_running_loop().create_task(patch_task(task_id, {"stage": "matching"}))
             tags_prompt, natural_prompt, description, characters = await agent(
-                prompt, images=reference_images, log_cb=tlog.add
+                prompt, images=reference_images, log_cb=_agent_log
             )
             # 阶段性结果摘要：只记长度不记内容（tech-design 3.3.4）
             tlog.add(
