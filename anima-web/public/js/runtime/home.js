@@ -22,9 +22,18 @@ import {
   createRefImageUploader,
   parsePngMetadata,
 } from '../ui/components.js';
-import { API_ERROR } from '../types/task.js';
+import { API_ERROR, isTerminal } from '../types/task.js';
 
 const JUMP_PAUSE_MS = 1500;
+
+/** Sprint 17.1：引擎细粒度阶段 → 用户可读文案（status-msg 实时显示） */
+const STAGE_TEXT = {
+  parsing: '正在解析画面描述…',
+  prompting: '正在构思提示词…',
+  drawing: '正在绘制…',
+  postprocess: '正在润色与压缩…',
+  uploading: '正在上传结果…',
+};
 
 function initHome() {
   // ===== 标签栏切换 =====
@@ -93,6 +102,12 @@ function initHome() {
     watcher = watchTask({
       id: taskLike.id,
       taskToken: taskLike.taskToken,
+      // Sprint 17.1：实时显示当前阶段（引擎细粒度 stage 回写）
+      onUpdate: (t) => {
+        if (!t || isTerminal(t.status)) return;
+        const stageText = STAGE_TEXT[t.stage];
+        if (stageText) showStatus(stageText);
+      },
       onDone: () => {
         showStatus('生成完成，正在前往结果页…');
         scheduleJump(taskLike.id);
