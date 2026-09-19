@@ -369,11 +369,14 @@ async def process_task(task: dict):
             tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
         else:
             # ===== natural 模式（原流程）：自然语言 → LLM Agent → 绘制 =====
+            # Sprint 17.1：细粒度 stage 回写（前端实时显示当前阶段）
             # 1) 提示词参数解析（尺寸等）
+            await patch_task(task_id, {"stage": "parsing"})
             prompt, width, height = await extract_prompt_params(prompt)
             tlog.add("params_parsed", f"尺寸 {width}x{height}")
 
             # 2) 提示词 Agent（tags_prompt / natural_prompt / description / characters）
+            await patch_task(task_id, {"stage": "prompting"})
             tags_prompt, natural_prompt, description, characters = await agent(
                 prompt, images=reference_images, log_cb=tlog.add
             )
@@ -411,6 +414,7 @@ async def process_task(task: dict):
             tlog.add("drawing_done", f"绘制完成（{len(img_bytes)}B）")
 
             # 5) oxipng 无损重压缩（NFR-25）→ AI 元数据（GB 45438-2025，F17）。顺序：先压缩后写元数据。
+            await patch_task(task_id, {"stage": "postprocess"})
             img_bytes = recompress_png(img_bytes)
             img_bytes = embed_ai_metadata(img_bytes, build_meta_params(
                 tags_prompt=tags_prompt, natural_prompt=natural_prompt,
@@ -419,6 +423,7 @@ async def process_task(task: dict):
             tlog.add("postprocess_done", f"压缩+元数据完成（{len(img_bytes)}B）")
 
             # 6) 结果直传 Worker（KV 版：POST 字节，Worker 写 KV）
+            await patch_task(task_id, {"stage": "uploading"})
             presign_url, result_key = await presign_result(task_id)
             if not presign_url:
                 raise RuntimeError("presign-result 获取失败")
