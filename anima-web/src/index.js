@@ -651,17 +651,23 @@ async function handleEngine(request, env, path, url) {
     if (!task) return json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
 
     const newStatus = body.status;
-    if (!FORWARD_ONLY[task.status] || !FORWARD_ONLY[task.status].includes(newStatus)) {
-      return json({ error: { code: 'INVALID_TRANSITION', message: `状态迁移非法: ${task.status} → ${newStatus}` } }, { status: 422 });
+    // Sprint 17.1：允许 stage-only 更新（引擎在提示词/绘制各细阶段实时回写，status 不变）
+    if (newStatus != null) {
+      if (!FORWARD_ONLY[task.status] || !FORWARD_ONLY[task.status].includes(newStatus)) {
+        return json({ error: { code: 'INVALID_TRANSITION', message: `状态迁移非法: ${task.status} → ${newStatus}` } }, { status: 422 });
+      }
+    } else if (body.stage == null) {
+      return json({ error: { code: 'BAD_REQUEST', message: 'PATCH 需要 status 或 stage' } }, { status: 400 });
     }
 
-    const stage = body.stage != null ? String(body.stage) : null;
+    const stage = body.stage != null ? String(body.stage) : task.stage;
     const resultKey = body.result_key || task.result_key;
     const failureReason = body.failure_reason || null;
     const engineLog = body.engine_log != null ? String(body.engine_log) : (task.engine_log || null);
+    const finalStatus = newStatus != null ? newStatus : task.status;
     await env.DB.prepare(
       `UPDATE tasks SET status = ?, stage = ?, result_key = ?, failure_reason = ?, engine_log = ?, updated_at = ? WHERE id = ?`
-    ).bind(newStatus, stage, resultKey, failureReason, engineLog, Date.now(), id).run();
+    ).bind(finalStatus, stage, resultKey, failureReason, engineLog, Date.now(), id).run();
 
     // Sprint 16.2：每日任务终态统计（#1 完成率）——首次进入终态时累计（幂等防重：终态迁移不可逆）
     if (['done', 'failed', 'rejected'].includes(newStatus) && !['done', 'failed', 'rejected'].includes(task.status)) {
