@@ -420,6 +420,7 @@ async def agent(
 
     if not has_artist_tag and tags_prompt:
         logger.info("tags_prompt 中未发现画师标签，开始匹配画师...")
+        _log("artist_matching", "开始匹配画师")
 
         # Sprint 17.1 提速：画师选择（LLM）与标签分类（LLM）并行——两者互不依赖，
         # 串行时白白多等一次 LLM 往返（4-10s）。分类结果只被推荐分支用到。
