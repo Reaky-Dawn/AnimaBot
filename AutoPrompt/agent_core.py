@@ -421,13 +421,17 @@ async def agent(
     if not has_artist_tag and tags_prompt:
         logger.info("tags_prompt 中未发现画师标签，开始匹配画师...")
 
-        artist_tag = await _select_artist_from_user_style(user_input_block)
+        # Sprint 17.1 提速：画师选择（LLM）与标签分类（LLM）并行——两者互不依赖，
+        # 串行时白白多等一次 LLM 往返（4-10s）。分类结果只被推荐分支用到。
+        tags_list = [t.strip() for t in tags_prompt.split(',') if t.strip()]
+        artist_task = asyncio.create_task(_select_artist_from_user_style(user_input_block))
+        classify_task = asyncio.create_task(_classify_tags(tags_list))
+        artist_tag = await artist_task
         if not artist_tag:
-            tags_list = [t.strip() for t in tags_prompt.split(',') if t.strip()]
-            tag_weights, classify_tags = await _classify_tags(tags_list)
+            tag_weights, classify_tags = await classify_task
 
             HIGH_DISCRIMINATIVE_CATEGORIES = {
-                "character", "copyright", "style", "clothing", 
+                "character", "copyright", "style", "clothing",
                 "pose", "fetish", "nsfw", "appearance"
             }
 
