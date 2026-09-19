@@ -352,9 +352,12 @@ export function failureReasonText(reason) {
 }
 
 /**
- * Sprint 11：把 engine_log（JSON 数组）折叠成一句「卡在某一步」的简要文案。
- * 完整错误明细不在网页展示（由 Kaggle 侧独立 error log 落盘），此处仅取
- * 倒数第二个非终态步骤名，告诉用户大致卡在哪一步。
+ * Sprint 11 → Sprint 17：把 engine_log（JSON 数组）折叠成一句简要文案。
+ * 规则：
+ *  - 失败发生在 LLM/提示词阶段（最后实质步骤是 claim/seed，即还没到绘制）→
+ *    显示「提示词生成失败」而非「卡在 seed/排队」——秒败不是"卡住"，避免误导用户干等
+ *  - 失败发生在绘制及之后 → 沿用「卡在「XX」」
+ * 完整错误明细不在网页展示（由 Kaggle 侧独立 error log 落盘）。
  * @param {string|Array|null} engineLog
  * @returns {string|null} 简要文案（无则 null）
  */
@@ -384,6 +387,10 @@ export function stuckStepText(engineLog) {
   const last = arr[arr.length - 1];
   let step = last;
   if (step.action === 'failed' && arr.length >= 2) step = arr[arr.length - 2];
+  // LLM 阶段失败（没走到参数解析）：秒败，不是"卡住"
+  if (step.action === 'claim' || step.action === 'seed') {
+    return '提示词生成失败（服务暂时不可用，请稍后重试）';
+  }
   const label = stepNameMap[step.action] || step.action;
   return `卡在「${label}」`;
 }
