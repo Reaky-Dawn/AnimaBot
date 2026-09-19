@@ -29,7 +29,8 @@ const JUMP_PAUSE_MS = 1500;
 /** Sprint 17.1：引擎细粒度阶段 → 用户可读文案（status-msg 实时显示） */
 const STAGE_TEXT = {
   parsing: '正在解析画面描述…',
-  prompting: '正在构思提示词…',
+  prompting: '正在生成提示词…',
+  matching: '正在匹配画师风格…',
   drawing: '正在绘制…',
   postprocess: '正在润色与压缩…',
   uploading: '正在上传结果…',
