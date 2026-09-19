@@ -110,8 +110,8 @@ class TestUtilsMetadata(unittest.TestCase):
         self.assertIn("1girl, solo", p)
         self.assertIn("Steps: 30", p)
         self.assertIn("Sampler: euler", p)
-        self.assertIn("Schedule type: karras", p)
-        self.assertIn("CFG scale: 5", p)
+        self.assertIn("Schedule type: simple", p)  # Sprint 17.2：karras→simple（过曝治本）
+        self.assertIn("CFG scale: 3.5", p)
         self.assertIn("Size: 832x1216", p)
         self.assertIn("Model: miaomiaoHarem_anima12.safetensors", p)
         self.assertIn("Negative prompt:", p)
@@ -134,7 +134,8 @@ class TestCoreMisc(unittest.TestCase):
         for k in ("tags_prompt", "natural_prompt", "negative_prompt", "steps", "sampler",
                   "scheduler", "cfg", "seed", "width", "height", "model", "vae"):
             self.assertIn(k, p)
-        self.assertEqual(p["scheduler"], "karras")   # beta57 → karras 修复保持
+        self.assertEqual(p["scheduler"], "simple")  # Sprint 17.2：过曝治本 karras→simple
+        self.assertEqual(p["cfg"], 3.5)
         self.assertEqual(p["steps"], 30)
 
     def test_write_error_log_appends(self):
