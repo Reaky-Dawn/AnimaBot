@@ -224,10 +224,9 @@ export function watchTask(opts) {
       unchanged = (stageAdvanced || statusChanged) ? 0 : unchanged + 1;
       lastStatus = t.status;
 
-      // 状态变化 → 通知 UI
-      if (stageAdvanced || statusChanged || queuePosChanged) {
-        onUpdate(t);
-      }
+      // Sprint 17.1：细粒度阶段实时显示——每次轮询都回调 onUpdate（引擎 stage 字段：
+      // parsing/prompting/drawing/postprocess/uploading），UI 层按 stage 去重渲染
+      onUpdate(t);
 
       // 终态判定
       if (isTerminal(t.status)) {
