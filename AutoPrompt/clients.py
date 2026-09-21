@@ -9,11 +9,16 @@ clients.py —— LLM 客户端（Sprint 10：4 槽位 failover 版）
   - 全部失败抛 AllProvidersFailed（聚合各槽位错误，api_key 已脱敏）
   - 超时下限 600s：timeout = max(槽位配置, 600)（原值 >600s 的不动）
   - 对外暴露接口不变：client_cheap / client_quality 均有 .chat.completions.create(...)
+
+Sprint 17.3：LLM 性能遥测——每次成功调用记录 耗时/模型/tokens 用量到 LLM_TELEMETRY
+（环形缓冲），供 core.py 随 TaskLog 上报，作为「平均 tokens/s 过低 → 启用 TPU 本地方案」
+的决策数据。
 """
 
 import asyncio
 import json
 import os
+import time
 
 from openai import AsyncOpenAI
 
@@ -23,6 +28,10 @@ DEFAULT_TIMEOUT = 600
 # Sprint 13.5：槽位内重试。首发失败后重试 3 次，间隔逐次拉长（2s→5s→10s）。
 RETRY_ATTEMPTS = 4
 RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+# Sprint 17.3：LLM 性能遥测（环形缓冲，最近 32 条成功调用）
+LLM_TELEMETRY = []
+TELEMETRY_MAX = 32
 
 
 def _is_thinking_reject(msg: str) -> bool:
@@ -140,8 +149,28 @@ class FailoverClient:
             slot_label = p.get("name") or p.get("base_url") or f"slot{idx + 1}"
             attempt_kwargs = dict(kwargs)
             for attempt in range(RETRY_ATTEMPTS):
+                t0 = time.monotonic()
                 try:
-                    return await client.chat.completions.create(model=slot_model, **attempt_kwargs)
+                    resp = await client.chat.completions.create(model=slot_model, **attempt_kwargs)
+                    # Sprint 17.3：性能遥测（耗时 / tokens / tokens-per-second）
+                    try:
+                        usage = getattr(resp, "usage", None)
+                        pt = getattr(usage, "prompt_tokens", 0) or 0
+                        ct = getattr(usage, "completion_tokens", 0) or 0
+                        elapsed = time.monotonic() - t0
+                        LLM_TELEMETRY.append({
+                            "model": slot_model,
+                            "slot": slot_label,
+                            "elapsed_s": round(elapsed, 1),
+                            "prompt_tokens": pt,
+                            "completion_tokens": ct,
+                            "tps": round(ct / elapsed, 1) if elapsed > 0 and ct > 0 else None,
+                        })
+                        if len(LLM_TELEMETRY) > TELEMETRY_MAX:
+                            LLM_TELEMETRY.pop(0)
+                    except Exception:
+                        pass  # 遥测绝不影响主流程
+                    return resp
                 except Exception as e:
                     msg = str(e)
                     errors.append(f"槽位{idx + 1}[{slot_label}]: {sanitize(msg)}")
