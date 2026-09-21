@@ -118,6 +118,33 @@ def _new_seed() -> int:
     return random.randrange(0, 2 ** 48)
 
 
+def _llm_telemetry_json() -> str:
+    """Sprint 17.3：把本次会话的 LLM 性能遥测（clients.LLM_TELEMETRY）序列化为
+    可追加到 engine_log 的 JSON 片段。含平均 tokens/s 与 TPU 触发建议。
+    遥测缺失/异常时返回空串（不阻塞）。"""
+    try:
+        from AutoPrompt.clients import LLM_TELEMETRY
+        if not LLM_TELEMETRY:
+            return ""
+        tps_list = [t["tps"] for t in LLM_TELEMETRY if t.get("tps")]
+        avg_tps = round(sum(tps_list) / len(tps_list), 1) if tps_list else None
+        summary = {
+            "action": "llm_telemetry",
+            "detail": json.dumps({
+                "calls": len(LLM_TELEMETRY),
+                "avg_tps": avg_tps,
+                "avg_elapsed_s": round(sum(t["elapsed_s"] for t in LLM_TELEMETRY) / len(LLM_TELEMETRY), 1),
+                "models": sorted({t["model"] for t in LLM_TELEMETRY}),
+                "recent": LLM_TELEMETRY[-8:],
+                # TPU 触发参考线：平均生成速度 < 10 tok/s 视为过慢（本地 TPU v3-8 跑 8B 可达 30-60 tok/s）
+                "tpu_trigger_suggested": bool(avg_tps and avg_tps < 10),
+            }, ensure_ascii=False),
+        }
+        return json.dumps([summary], ensure_ascii=False)
+    except Exception:
+        return ""
+
+
 def build_meta_params(*, tags_prompt: str = "", natural_prompt: str = "",
                       width: int = 0, height: int = 0,
                       negative_prompt: str = _NEGATIVE_PROMPT,
@@ -436,8 +463,11 @@ async def process_task(task: dict):
                 raise RuntimeError("结果直传 Worker 失败")
             tlog.add("result_uploaded", "结果图已上传 Worker")
 
-            # 7) 回写 done
-            await patch_task(task_id, {"status": "done", "result_key": result_key})
+            # 7) 回写 done（Sprint 17.3：附带 LLM 性能遥测，供「tokens/s 过低 → TPU 方案」决策）
+            await patch_task(task_id, {
+                "status": "done", "result_key": result_key,
+                "engine_log": tlog.to_json() + _llm_telemetry_json(),
+            })
             tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
     except asyncio.CancelledError:
         raise
