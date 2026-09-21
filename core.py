@@ -145,6 +145,22 @@ def _llm_telemetry_json() -> str:
         return ""
 
 
+def _merged_engine_log(tlog: "TaskLog") -> str:
+    """Sprint 17.3：TaskLog 步骤数组 + LLM 遥测条目合并为**单个合法 JSON 数组**字符串。
+    （不能直接字符串拼接两个 JSON 数组——那是非法 JSON，前端/D1 侧解析会失败。）"""
+    try:
+        steps = json.loads(tlog.to_json())
+    except Exception:
+        steps = []
+    tele = _llm_telemetry_json()
+    if tele:
+        try:
+            steps.extend(json.loads(tele))
+        except Exception:
+            pass
+    return json.dumps(steps, ensure_ascii=False)
+
+
 def build_meta_params(*, tags_prompt: str = "", natural_prompt: str = "",
                       width: int = 0, height: int = 0,
                       negative_prompt: str = _NEGATIVE_PROMPT,
@@ -466,7 +482,7 @@ async def process_task(task: dict):
             # 7) 回写 done（Sprint 17.3：附带 LLM 性能遥测，供「tokens/s 过低 → TPU 方案」决策）
             await patch_task(task_id, {
                 "status": "done", "result_key": result_key,
-                "engine_log": tlog.to_json() + _llm_telemetry_json(),
+                "engine_log": _merged_engine_log(tlog),
             })
             tlog.add("done", f"完成（耗时 {time.time() - t0:.1f}s，{len(img_bytes)}B）")
     except asyncio.CancelledError:
